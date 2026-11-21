@@ -1,15 +1,65 @@
 import { randomUUID } from 'node:crypto'
+import { isOperatorId, operatorIds } from './operators.js'
+import { normalizeAlternative, normalizeValidation } from './harness.js'
+import { MAX_TASK_ATTACHMENTS, MAX_TASK_ATTACHMENT_BYTES } from './attachments.js'
+
+const evidencePrefix = 'FEISHU_OPERATION_EVIDENCE '
+const observation = value => typeof value === 'string' && value.trim() && value.length <= 500
+const actionable = /界面|页面|屏幕|按钮|弹窗|点击|表单|输入框|交互|复现|运行时|打开|选中|拖拽|下拉|仪表盘|前端|滑动|勾选|切换|筛选|用户(?:可|能|操作)|\b(?:ui|ux|browser|dialog|screen|button|form|click|submit|navigate|repro(?:duce|duction)?|runtime|dashboard|webpage|website|dropdown|log in)\b/iu
+const imageStages = ['confirm', 'design_queued', 'designing', 'blocked', 'review']
+const acceptsImage = task => imageStages.includes(task.stage) ||
+  (task.stage === 'manual_review' && task.manualReview?.kind === 'alternative')
+
+function requiresOperation(task) {
+  return task.type === 'fix' || [task.requirement.body, ...(task.comments ?? []), task.rework, task.validationRework].some(text => actionable.test(text ?? ''))
+}
+
+function validationFor(task) {
+  const approval = task.alternativeApproval
+  const validApproval = approval && approval.requirementVersion === task.requirementVersion && approval.planVersion === task.planVersion
+  const validation = normalizeValidation(validApproval ? approval.proposal.validation : task.plan?.validation)
+  if (!validation || (validation.kind === 'checks' && !validApproval && requiresOperation(task))) {
+    throw new Error('缺少适用于原需求的操作验证方案。请补充可执行步骤和预期结果后重新设计。')
+  }
+  return validation
+}
+
+function observedOperation(validation, reports, task) {
+  let evidence
+  for (const stdout of reports ?? []) {
+    for (const line of stdout.split(/\r?\n/u)) {
+      if (!line.startsWith(evidencePrefix) || line.length > 10_000) continue
+      let report
+      try { report = JSON.parse(line.slice(evidencePrefix.length)) } catch { continue }
+      if (report?.operation !== validation.operation) continue
+      const validSteps = Array.isArray(report.steps) && report.steps.length === validation.steps.length &&
+        report.steps.every((step, index) => step?.action === validation.steps[index] && observation(step.observed))
+      const observed = observation(report.observed) ? report.observed.trim() : undefined
+      const validBaseline = task.type !== 'fix' || (report.baseline?.reproduced === true && observation(report.baseline.observed) &&
+        report.baseline.observed.trim() !== observed)
+      if (report.expected !== validation.expected || report.passed !== true || !observed || !validSteps || !validBaseline) {
+        throw new Error('操作验证报告缺少适用的实测结果，或报告的步骤、预期与方案不一致。')
+      }
+      evidence ??= { kind: 'operation', operation: validation.operation, expected: validation.expected, observed,
+        steps: report.steps.map(step => ({ action: step.action, observed: step.observed.trim() })),
+        ...(task.type === 'fix' && { baseline: report.baseline.observed.trim() }) }
+    }
+  }
+  if (!evidence) throw new Error('缺少项目操作检查产生的实测报告。请使用已配置的操作检查执行需求步骤后重试。')
+  return evidence
+}
 
 const titles = {
   confirm: '待补充需求', design_queued: '等待设计', designing: '设计中', approval: '历史待审批', held: '历史暂缓任务',
   queued: '开发已入队', developing: '开发中', verify_queued: '等待验证', verifying: '验证中', blocked: '任务阻塞',
-  review: '开发交付', accepted: '已验收', cancelled: '已取消',
+  manual_review: '待所有者审批', review: '开发交付', accepted: '已验收', cancelled: '已取消',
 }
 const actions = {
   confirm: [['supplement', '补充信息', true], ['cancel', '取消']],
   design_queued: [['cancel', '取消']], designing: [['cancel', '取消']],
   queued: [['cancel', '取消']], developing: [['cancel', '取消']], verify_queued: [['cancel', '取消']], verifying: [['cancel', '取消']],
   blocked: [['retry', '重试'], ['fix_checks', '返工后重新验证', true], ['supplement', '提交补充', true], ['cancel', '取消']],
+  manual_review: [['approve_manual', '批准'], ['decline_manual', '拒绝'], ['cancel', '取消']],
   review: [['details', '查看改动'], ['rework', '要求返工', true], ['revise', '调整范围并重新设计', true], ['accept', '确认验收']],
 }
 const inFlight = ['designing', 'developing', 'verifying']
@@ -21,6 +71,29 @@ function requirement(text) {
   const acceptance = text.match(/(?:^|\n)\s*验收(?:条件|标准)?\s*[:：]\s*/u)
   const body = text.slice(main ? main.index + main[0].length : 0, acceptance?.index ?? text.length).trim()
   return { body }
+}
+
+// Match a complete configured name first, then the longest name before an inline separator.
+function parseRequest(text, projects, exactProject = false) {
+  const firstLine = text.match(/^(开发需求|修复缺陷|修复bug)(?:[ \t]*[｜|][ \t]*([^\r\n]*))?[ \t]*(?:\r?\n|$)/iu)
+  if (!firstLine) return
+  const heading = firstLine[2]?.trim() ?? ''
+  const nextLines = text.slice(firstLine[0].length)
+  let project = projects.resolve(heading)
+  if (exactProject && !project) return
+  let inline = ''
+  if (!project) {
+    for (const separator of heading.matchAll(/[｜|：:\p{Zs}\t]+/gu)) {
+      const matched = projects.resolve(heading.slice(0, separator.index).trimEnd())
+      if (!matched) continue
+      project = matched
+      inline = heading.slice(separator.index + separator[0].length).replace(/^[｜|：:\s]+/u, '')
+    }
+  }
+  const parsed = requirement([inline, nextLines].filter(Boolean).join('\n'))
+  // A TAPD description can request a deletion. Its approval comes from the operator.
+  if (exactProject) parsed.body = parsed.body.replace(/^[^\S\r\n]*删除文件[：:]/gmu, 'TAPD 请求删除文件：')
+  return { type: firstLine[1] === '开发需求' ? 'feature' : 'fix', project, requirement: parsed }
 }
 
 // 项目可识别且去掉来源链接后仍有正文时进入设计。
@@ -69,8 +142,26 @@ function render(task, project) {
     lines.push(`需求 v${task.requirementVersion} / 方案 v${task.planVersion}`, `方案\n${plan.summary}`,
       `影响范围\n${plan.scope}`, `风险与待澄清事项\n${plan.risks}`, `验证计划\n${plan.verification}`)
   }
+  if (acceptsImage(task)) lines.push(`可回复此卡片发送原型图或截图。已附 ${task.attachments?.length ?? 0}/8 张。`)
+  if (stage === 'manual_review' && task.manualReview?.kind === 'alternative') {
+    const { proposal } = task.manualReview
+    lines.push(`原需求\n${task.requirement.body}`, `替代方案\n${proposal.summary}`, `与原需求的差异\n${proposal.impact}`)
+    const { validation } = proposal
+    lines.push(validation.kind === 'operation'
+      ? `替代操作\n${validation.operation}\n${validation.steps.join('\n')}\n预期 ${validation.expected}`
+      : `验证范围\n${validation.reason}`)
+  }
   if (error && stage === 'blocked') lines.push(`失败阶段 ${titles[task.failedStage]}`, error)
-  if (result && ['review', 'blocked', 'accepted'].includes(stage)) {
+  if (result && ['review', 'manual_review', 'blocked', 'accepted'].includes(stage)) {
+    const changeReview = result.changeReview
+    if (changeReview?.deletions.length) lines.push('删除的受跟踪文件', ...changeReview.deletions)
+    if (changeReview?.warnings.length) lines.push('脚本检查提示', ...changeReview.warnings.map(({ path, reason }) => `${path} ${reason}`))
+    if (result.operationEvidence) {
+      const { operation, expected, observed, steps, baseline } = result.operationEvidence
+      lines.push(`实测操作 ${operation}`, `预期 ${expected}`, `实测结果 ${observed}`,
+        ...steps.map(step => `${step.action}\n${step.observed}`))
+      if (baseline) lines.push(`基线复现 ${baseline}`)
+    }
     lines.push(`分支 ${result.branch}`, `提交 ${result.commit || '待提交'}`, `改动\n${result.changes || '暂无'}`)
     if (result.remote) lines.push(`已推送 ${result.remote}/${result.branch}`)
     if (result.checks?.length) lines.push(`验证\n${result.checks.map(check => `${check.passed ? '通过' : '失败'} ${check.label}${check.output ? `\n${check.output}` : ''}`).join('\n')}`)
@@ -84,6 +175,9 @@ function render(task, project) {
 
 export function createWorkflow({ store, projects, userId, runner, repository, onError }) {
   let controller
+  const operators = operatorIds(userId)
+  const allowedOperator = actor => isOperatorId(actor) && operators !== null &&
+    (operators.length === 0 || operators.includes(actor))
 
   function update(task, stage) {
     task.stage = stage
@@ -106,34 +200,84 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
     task.requirementVersion++
     task.plan = null
     task.approval = null
+    task.alternativeApproval = null
+    task.manualReview = null
+    task.changeReviewApproval = null
+    task.rework = null
+    task.validationRework = null
     update(task, readyForDesign(task) ? 'design_queued' : 'confirm')
     return '已保存补充信息。'
   }
 
   // 只用消息首行的明确命令确定任务类型，避免从需求正文猜测。
-  function onMessage({ eventId, chatId, userId: actor, text, replyTo }) {
-    if (actor !== userId || !eventId || !chatId || typeof text !== 'string' || text.length > textLimit) return ''
+  function onMessage({ eventId, chatId, userId: actor, text, replyTo, replyRoot, group, tapdCard }) {
+    if (!allowedOperator(actor) || !eventId || !chatId || typeof text !== 'string' || text.length > textLimit) return ''
+    const request = parseRequest(text.trimStart(), projects, tapdCard)
+    const target = text.match(/^#?([0-9a-f]{8})(?:\s+|[：:])/i)
+    const repliedTask = [replyTo, replyRoot].map(id => id && store.byMessage(id)).find(Boolean)
+    if (group && !request && !target && !repliedTask) return ''
     return store.once(`message:${eventId}`, () => {
-      const start = text.match(/^(开发需求|修复缺陷|修复bug)(?:\s*[｜|]\s*([^\r\n]*))?[ \t]*(?:\r?\n|$)/iu)
-      if (start) {
+      if (request) {
         let id
         do { id = randomUUID().slice(0, 8).toUpperCase() } while (store.get(id))
         const task = {
-          id, chatId, owner: actor, type: start[1] === '开发需求' ? 'feature' : 'fix',
-          project: projects.resolve(start[2]?.trim()), requirement: requirement(text.slice(start[0].length)),
+          id, chatId, owner: actor, ...request,
           requirementVersion: 1, planVersion: 0,
         }
         update(task, readyForDesign(task) ? 'design_queued' : 'confirm')
         return ''
       }
-      const target = text.match(/^#?([0-9a-f]{8})(?:\s+|[：:])/i)
-      const inferred = !target && !replyTo ? store.inChat(chatId).filter(task => task.owner === actor) : []
+      const inferred = !group && !target && !replyTo ? store.inChat(chatId).filter(task => task.owner === actor) : []
       if (inferred.length > 1) return `请在补充信息前加任务编号 ${inferred.map(task => task.id).join('、')}。`
-      const id = target?.[1].toUpperCase() ?? (replyTo ? store.byMessage(replyTo) : inferred[0]?.id)
+      const id = target?.[1].toUpperCase() ?? (repliedTask ?? inferred[0]?.id)
       const task = id && store.get(id)
+      if (group && (!task || task.chatId !== chatId || task.owner !== actor)) return ''
       if (!task || task.chatId !== chatId || task.owner !== actor) return '请发送“开发需求｜项目名”或“修复缺陷｜项目名”创建任务，或回复任务卡片。'
       return respond(task, task.stage === 'review' ? 'rework' : 'supplement',
         (target ? text.slice(target[0].length) : text).trim())
+    })
+  }
+
+  function attachmentTarget({ chatId, userId: actor, replyTo, replyRoot }) {
+    if (!allowedOperator(actor) || !chatId) return undefined
+    for (const message of [replyTo, replyRoot]) {
+      const id = message && store.byMessage(message)
+      if (!id) continue
+      const task = store.get(id)
+      return task?.owner === actor && task.chatId === chatId && acceptsImage(task) ? id : undefined
+    }
+  }
+
+  function attachImage({ taskId, chatId, userId: actor, attachment, eventId }) {
+    if (!allowedOperator(actor) || !eventId || !attachment?.id || !Number.isSafeInteger(attachment.byteLength) || attachment.byteLength <= 0) return '无法保存此图片。'
+    return store.once(`image:${eventId}`, () => {
+      const task = store.get(taskId)
+      if (!task || task.chatId !== chatId || task.owner !== actor || !acceptsImage(task)) return '请回复可接收图片的任务卡片。'
+      const attachments = task.attachments ?? []
+      if (attachments.some(image => image.id === attachment.id)) return '该图片已保存。'
+      if (attachments.length >= MAX_TASK_ATTACHMENTS ||
+          attachments.reduce((bytes, image) => bytes + image.byteLength, attachment.byteLength) > MAX_TASK_ATTACHMENT_BYTES) {
+        return '任务图片已达到 8 张或 24 MiB 的上限。'
+      }
+      task.attachments = [...attachments, attachment]
+      if (['designing', 'blocked', 'manual_review'].includes(task.stage)) {
+        const refreshDesign = readyForDesign(task)
+        task.plan = null
+        task.approval = null
+        task.alternativeApproval = null
+        task.manualReview = null
+        task.changeReviewApproval = null
+        task.error = null
+        if (task.attempt?.status === 'running') {
+          task.attempt.status = 'cancelled'
+          task.attempt.finishedAt = Date.now()
+        }
+        update(task, refreshDesign ? 'design_queued' : 'confirm')
+        if (controller?.id === task.id) controller.abort()
+        return refreshDesign ? '已保存任务图片，将带图重新设计。' : '已保存任务图片。'
+      }
+      update(task, task.stage)
+      return '已保存任务图片。'
     })
   }
 
@@ -147,7 +291,32 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
         task.comments = [...(task.comments ?? []), text].slice(-5)
         task.plan = null
         task.approval = null
+        task.alternativeApproval = null
+        task.changeReviewApproval = null
+        task.rework = null
+        task.validationRework = null
         update(task, 'design_queued')
+        break
+      case 'approve_manual': {
+        const review = task.manualReview
+        if (review?.kind === 'alternative') {
+          task.alternativeApproval = { proposal: review.proposal, requirementVersion: task.requirementVersion, planVersion: task.planVersion }
+          task.manualReview = null
+          update(task, 'queued')
+        } else if (review?.kind === 'change' && review.commit === task.result?.changeReview?.commit && review.commit === task.result.commit) {
+          task.changeReviewApproval = { commit: review.commit }
+          task.manualReview = null
+          update(task, 'verify_queued')
+        } else {
+          return '审批内容已失效，请重新生成。'
+        }
+        break
+      }
+      case 'decline_manual':
+        task.failedStage = task.manualReview.sourceStage
+        task.error = '所有者拒绝了待审批事项。'
+        task.manualReview = null
+        update(task, 'blocked')
         break
       case 'retry':
         update(task, { designing: 'design_queued', developing: 'queued', verifying: 'verify_queued' }[task.failedStage])
@@ -155,7 +324,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
       case 'fix_checks':
       case 'rework':
         task.rework = text
-        update(task, 'queued')
+        update(task, actionable.test(text) ? 'design_queued' : 'queued')
         break
       case 'details':
         task.showDetails = true
@@ -174,7 +343,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
   }
 
   function onAction({ eventId, chatId, userId: actor, messageId, token, text }) {
-    if (actor !== userId || !eventId || !chatId || !messageId || typeof token !== 'string') return '当前用户无法操作此任务。'
+    if (!allowedOperator(actor) || !eventId || !chatId || !messageId || typeof token !== 'string') return '当前用户无法操作此任务。'
     const [id, revision, action, extra] = token.split(':')
     const reply = store.once(`action:${eventId}`, () => {
       const task = store.get(id)
@@ -290,32 +459,62 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
       if (task.stage === 'designing') {
         task.plan = await runner.design({ task, project, signal, recordRun, recordSession, recordResult, recordOutput })
         task.planVersion++
-        persist('queued')
+        if (task.plan?.alternative != null) {
+          const proposal = normalizeAlternative(task.plan.alternative)
+          if (!proposal) throw new Error('替代方案缺少范围差异或验证计划。')
+          task.manualReview = { kind: 'alternative', proposal, sourceStage: task.stage }
+          persist('manual_review')
+        } else {
+          validationFor(task)
+          persist('queued')
+        }
         return
       }
+      if (!task.plan?.validation && !task.alternativeApproval) {
+        persist('design_queued')
+        return
+      }
+      const validation = validationFor(task)
       if (!task.work) {
         task.work = await repository.intent({ task, project, signal })
         persist(task.stage)
       }
       task.work = await repository.prepare({ task, project, signal })
       persist(task.stage)
-      let verification = {}
       if (task.stage === 'developing') {
         const development = await runner.develop({ task, project, signal, recordRun, recordSession, recordResult, recordOutput })
-        if (!development || !['implemented', 'no_change', 'needs_clarification', 'blocked'].includes(development.status) ||
+        if (!development || !['implemented', 'no_change', 'needs_clarification', 'blocked', 'alternative'].includes(development.status) ||
             typeof development.summary !== 'string' || !development.summary.trim() || development.summary.length > 1400) {
           throw new Error('开发委派返回了无效结果。')
         }
         task.attempt.development = development
         if (development.status === 'needs_clarification') throw new Error(`开发需要补充：${development.summary}`)
         if (development.status === 'blocked') throw new Error(`开发受阻：${development.summary}`)
-        verification = { previousCommit: task.result?.commit ?? task.work.base, requireNewCommit: Boolean(task.result?.commit) }
+        if (development.status === 'alternative') {
+          const proposal = normalizeAlternative(development.alternative)
+          if (!proposal) throw new Error('替代方案缺少范围差异或验证计划。')
+          task.manualReview = { kind: 'alternative', proposal, sourceStage: task.stage }
+          persist('manual_review')
+          return
+        }
+        task.verification = { previousCommit: task.work.pushedCommit ?? task.work.base, requireNewCommit: Boolean(task.work.pushedCommit) }
+        task.validationRework = task.rework
         task.rework = null
         persist('verifying')
       }
-      task.result = await repository.verify({ task, project, signal, ...verification })
-      if (!task.result.checks.every(check => check.passed)) throw new Error('验证未通过，请查看检查结果。')
-      const pushed = await repository.push({ task, project, signal, result: task.result })
+      const operationValidation = validation.kind === 'operation' ? { ...validation, type: task.type, baseCommit: task.work.base } : undefined
+      const { operationReports, ...result } = await repository.verify({ task, project, signal, ...task.verification, operationValidation })
+      task.result = result
+      if (result.changeReview?.approvalRequired) {
+        task.manualReview = { kind: 'change', commit: result.changeReview.commit, sourceStage: task.stage }
+        persist('manual_review')
+        return
+      }
+      if (!result.checks?.length || !result.checks.every(check => check.passed)) throw new Error('验证未通过，请查看检查结果。')
+      if (operationValidation) {
+        result.operationEvidence = { ...observedOperation(operationValidation, operationReports, task), commit: result.commit }
+      }
+      const pushed = await repository.push({ task, project, signal, result })
       task.work.pushedCommit = pushed.commit
       task.result.remote = pushed.remote
       persist('review')
@@ -355,5 +554,5 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
     }
   }
 
-  return { onMessage, onAction, recover, work, publish, stop: () => controller?.abort() }
+  return { onMessage, onAction, attachmentTarget, attachImage, recover, work, publish, stop: () => controller?.abort() }
 }

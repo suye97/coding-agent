@@ -25,7 +25,7 @@ function host(config, options = {}) {
       },
     },
   }
-  registerChannelSettings(ctx, config)
+  registerChannelSettings(ctx, config, entry, () => options.lastGroupCard)
   /** 通过真实 RPC 请求信封调用已注册的路由。 */
   async function call(method, payload = {}) {
     const route = routes.get(`/api/feishuChannel/${method}`)
@@ -58,6 +58,18 @@ test('Host settings routes save partial disabled configuration and preserve unre
   assert.equal(wrongMethod.status, 400)
 })
 
+test('owner can inspect and save an observed TAPD source explicitly', async () => {
+  const config = { enabled: false, appId: 'cli_app', userId: 'ou_owner', secretKey: 'FEISHU_DEV_APP_SECRET' }
+  const lastGroupCard = { chatId: 'oc_coding', senderId: 'cli_tapd', receivedAt: 42 }
+  const fixture = host(config, { lastGroupCard })
+  assert.deepEqual((await fixture.call('read')).body.result.value.lastGroupCard, lastGroupCard)
+  assert.equal(fixture.entry.options.config.tapdCardSource, undefined)
+  const payload = { ...config, tapdCardSource: { chatId: lastGroupCard.chatId, senderId: lastGroupCard.senderId, operatorId: 'ou_owner' } }
+  assert.equal((await fixture.call('save', { ...payload, userId: 'ou_other' })).body.result.error.code, 'feishu-channel/invalid-source')
+  assert.deepEqual((await fixture.call('save', payload)).body.result.value.tapdCardSource, payload.tapdCardSource)
+  assert.deepEqual(fixture.entry.options.config.tapdCardSource, payload.tapdCardSource)
+})
+
 test('Host settings routes validate enablement and report partial persistence', async () => {
   const config = { enabled: false, appId: '', userId: '', secretKey: 'FEISHU_DEV_APP_SECRET', dataDirectory: '', projects: [] }
   const fixture = host(config)
@@ -77,4 +89,8 @@ test('Host settings routes validate enablement and report partial persistence', 
   assert.equal(saved.body.result.ok, true)
   assert.equal(fixture.entry.options.config.enabled, true)
   assert.equal(fixture.entry.options.config.dataDirectory, request.dataDirectory)
+  assert.equal((await fixture.call('save', { ...request, userId: '' })).body.result.ok, true)
+  const multiple = await fixture.call('save', { ...request, userId: 'ou_first, ou_second' })
+  assert.equal(multiple.body.result.value.userId, 'ou_first,ou_second')
+  assert.equal((await fixture.call('save', { ...request, userId: 'ou_first，ou_second' })).body.result.error.code, 'feishu-channel/invalid-user-id')
 })

@@ -61,6 +61,7 @@ function validProject(project) {
   return project.checks.every(check => check && typeof check === 'object' && !Array.isArray(check) &&
     typeof check.label === 'string' && !!check.label.trim() &&
     typeof check.command === 'string' && !!check.command.trim() &&
+    (check.kind === undefined || ['command', 'operation'].includes(check.kind)) &&
     Array.isArray(check.args) && check.args.every(arg => typeof arg === 'string') &&
     Number.isInteger(check.timeoutMs) && check.timeoutMs >= 1 && check.timeoutMs <= 600000)
 }

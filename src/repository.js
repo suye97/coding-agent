@@ -2,9 +2,10 @@ import { execFile } from 'node:child_process'
 import { lstat, mkdir, realpath } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
+import { inspectChanges } from './change-review.js'
 
 const exec = promisify(execFile)
-const gitOptions = ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null')]
+const gitOptions = ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), '-c', 'core.fsmonitor=false']
 
 // 执行 Git 命令，并把可供任务卡片展示的错误限制为短消息。
 async function git(cwd, signal, ...args) {
@@ -94,34 +95,89 @@ export function createRepository(worktreeRoot) {
     return { ...work, prepared: true }
   }
 
-  // 执行项目检查并确认工作树仅含已提交的任务改动。
-  async function verify({ task, project, signal, previousCommit = task.work?.base, requireNewCommit = false }) {
+  async function reviewChanges({ task, worktree, base, commit, signal }) {
+    const diff = (...args) => git(worktree, signal, 'diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-relative', ...args)
+    return inspectChanges({
+      commit,
+      comparisons: [base, task.work?.pushedCommit].filter(Boolean),
+      requirement: task.requirement?.body,
+      approval: task.changeReviewApproval,
+      async diffEntries(from, to) {
+        const raw = await diff('--raw', '-z', '--no-renames', '--ignore-submodules=none', from, to, '--')
+        if (!raw) return []
+        const fields = raw.split('\0')
+        const entries = []
+        for (let i = 0; i < fields.length - 1; i += 2) {
+          const metadata = fields[i].match(/^:[0-7]{6} ([0-7]{6}) [0-9a-f]+ [0-9a-f]+ ([ADMT])$/u)
+          if (!metadata || !fields[i + 1]) throw new Error('无法核对 Git 改动路径。')
+          entries.push({ mode: metadata[1], kind: metadata[2], path: fields[i + 1] })
+        }
+        return entries
+      },
+      addedLines: (from, to, path) => diff('--text', '--unified=0', '--output-indicator-new=+', '--no-renames', from, to, '--', `:(literal)${path}`),
+    })
+  }
+
+  function worktreeStatus(worktree, signal) {
+    return git(worktree, signal, 'status', '--porcelain=v1', '--untracked-files=normal', '--ignore-submodules=none')
+  }
+
+  async function matchesWorktree({ worktree, commit, branch, signal }) {
+    const [head, currentBranch, status] = await Promise.all([
+      git(worktree, signal, 'rev-parse', 'HEAD'),
+      git(worktree, signal, 'symbolic-ref', 'HEAD'),
+      worktreeStatus(worktree, signal),
+    ])
+    return head === commit && currentBranch === `refs/heads/${branch}` && !status
+  }
+
+  // 先审查已提交的改动，再执行可信项目配置指定的检查。
+  async function verify({ task, project, signal, previousCommit = task.work?.base, requireNewCommit = false, operationValidation }) {
     const { worktree, branch, base } = await prepare({ task, project, signal })
+    const commit = await git(worktree, signal, 'rev-parse', 'HEAD')
+    const status = await worktreeStatus(worktree, signal)
+    const committed = await git(worktree, signal, 'diff', '--no-ext-diff', '--no-textconv', '--stat', base, commit, '--')
+    const changes = [committed, status].filter(Boolean).join('\n')
     const checks = []
+    const operationReports = []
+    const result = { worktree, branch, changes, commit, checks, operationReports }
+    const cleanCheck = { label: requireNewCommit ? '检查本轮返工提交与工作树' : '检查本地提交与工作树', passed: false }
+    if (status || commit === base || (requireNewCommit && commit === previousCommit)) {
+      cleanCheck.output = status ? '工作树还有未提交的改动。' : requireNewCommit ? '本轮返工没有产生新提交。' : '分支没有新增提交。'
+      checks.push(cleanCheck)
+      return result
+    }
+    result.changeReview = await reviewChanges({ task, worktree, base, commit, signal })
+    if (result.changeReview.approvalRequired) return result
+    const snapshot = { worktree, commit, branch, signal }
+    let unchanged = await matchesWorktree(snapshot)
     for (const check of project.checks) {
+      if (!unchanged) break
       signal.throwIfAborted()
+      const operation = check.kind === 'operation'
+      if (operation && !operationValidation) continue
       try {
         const { stdout, stderr } = await exec(check.command, check.args, {
           cwd: worktree, signal, timeout: check.timeoutMs, maxBuffer: 512 * 1024, windowsHide: true,
+          ...(operation && { env: { ...process.env, FEISHU_OPERATION_VALIDATION: JSON.stringify(operationValidation), FEISHU_VALIDATED_COMMIT: commit } }),
         })
-        checks.push({ label: check.label, passed: true, output: `${stdout}\n${stderr}`.trim().slice(-1200) })
+        if (operation) operationReports.push(stdout)
+        checks.push({ label: check.label, passed: true, output: operation ? '' : `${stdout}\n${stderr}`.trim().slice(-1200) })
       } catch (error) {
         signal.throwIfAborted()
         // 只显示有限的命令输出，避免将完整命令或环境信息写入任务卡片。
-        const output = [error.stderr, error.stdout].filter(Boolean).join('\n').trim().slice(-1200)
+        const output = check.kind === 'operation' ? '' : [error.stderr, error.stdout].filter(Boolean).join('\n').trim().slice(-1200)
         checks.push({ label: check.label, passed: false, output: output || `执行失败 (${error.code ?? error.signal ?? '未知错误'})` })
       }
+      unchanged = await matchesWorktree(snapshot)
     }
-    const status = await git(worktree, signal, 'status', '--porcelain=v1', '--untracked-files=normal')
-    const committed = await git(worktree, signal, 'diff', '--stat', base, 'HEAD', '--')
-    const changes = [committed, status].filter(Boolean).join('\n')
-    const commit = await git(worktree, signal, 'rev-parse', 'HEAD')
-    const expectedCommit = requireNewCommit ? (previousCommit ?? base) : base
-    checks.push({ label: requireNewCommit ? '检查本轮返工提交与工作树' : '检查本地提交与工作树',
-      passed: !status && commit !== expectedCommit,
-      output: status ? '工作树还有未提交的改动。' : commit === expectedCommit
-        ? requireNewCommit ? '本轮返工没有产生新提交。' : '分支没有新增提交。' : '' })
-    return { worktree, branch, changes, commit, checks }
+    cleanCheck.passed = unchanged
+    if (!cleanCheck.passed) {
+      cleanCheck.output = '检查期间任务分支、提交或工作树发生了变化，请重新审查和验证。'
+      operationReports.length = 0
+    }
+    checks.push(cleanCheck)
+    return result
   }
 
   // 仅推送验证过的精确提交，并要求远端分支仍处于本任务上次推送的位置。
@@ -129,11 +185,15 @@ export function createRepository(worktreeRoot) {
     if (!result?.commit || !result.checks?.length || !result.checks.every(check => check.passed)) {
       throw new Error('验证未通过，禁止推送。')
     }
-    const { worktree, branch, remote } = await prepare({ task, project, signal })
-    if (result.branch !== branch || !/^[0-9a-f]{40,64}$/.test(result.commit)) throw new Error('验证结果与任务分支不匹配。')
-    const commit = await git(worktree, signal, 'rev-parse', 'HEAD')
-    const status = await git(worktree, signal, 'status', '--porcelain=v1', '--untracked-files=normal')
-    if (commit !== result.commit || status) throw new Error('验证后提交或工作树已变化，请重新验证。')
+    const { worktree, branch, base, remote } = await prepare({ task, project, signal })
+    if (result.branch !== branch || !/^[0-9a-f]{40,64}$/.test(result.commit) || result.changeReview?.commit !== result.commit) {
+      throw new Error('验证结果与任务分支或改动审查不匹配。')
+    }
+    const commit = result.commit
+    const snapshot = { worktree, commit, branch, signal }
+    if (!await matchesWorktree(snapshot)) throw new Error('验证后提交或工作树已变化，请重新验证。')
+    const changeReview = await reviewChanges({ task, worktree, base, commit, signal })
+    if (changeReview.approvalRequired) throw new Error('改动尚未通过人工审查，禁止推送。')
     const remoteGit = async (...args) => {
       try {
         const { stdout } = await exec('git', [...gitOptions, '-c', 'protocol.ext.allow=never', ...args], {
@@ -159,6 +219,7 @@ export function createRepository(worktreeRoot) {
       throw new Error(`远端 ${remote}/${branch} 已被其他提交占用或改动，请人工核对。`)
     }
     if (previous) await git(worktree, signal, 'merge-base', '--is-ancestor', previous, commit)
+    if (!await matchesWorktree(snapshot)) throw new Error('验证后提交或工作树已变化，请重新验证。')
     // Check the expected remote tip atomically. Existing refs must still fast-forward.
     await remoteGit('-c', 'push.followTags=false', '-c', 'push.recurseSubmodules=no', 'push', '--porcelain',
       `--force-with-lease=${ref}:${previous ?? ''}`, '--', pushUrls[0], `${commit}:${ref}`)

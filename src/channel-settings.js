@@ -1,17 +1,20 @@
 import { isAbsolute } from 'node:path'
 import { createProjects } from './repository.js'
+import { isOperatorId, operatorIds } from './operators.js'
 
 const prefix = 'feishuChannel/'
 const failure = (code, message) => ({ ok: false, error: { code, message, details: {} } })
 
 /** 返回可展示的配置状态，绝不包含凭据值。 */
-function publicSettings(config, secretConfigured) {
+function publicSettings(config, secretConfigured, lastGroupCard) {
   return {
     appId: config.appId ?? '',
     userId: config.userId ?? '',
     enabled: config.enabled === true,
     dataDirectory: config.dataDirectory ?? '',
     secretConfigured,
+    ...(config.tapdCardSource && { tapdCardSource: config.tapdCardSource }),
+    ...(lastGroupCard && { lastGroupCard }),
   }
 }
 
@@ -24,18 +27,18 @@ function validateInput(payload) {
       (payload.appSecret !== undefined && (typeof payload.appSecret !== 'string' || !payload.appSecret.trim()))) {
     return failure('feishu-channel/invalid-input', '配置字段格式无效。')
   }
-  if (payload.appId !== payload.appId.trim() || payload.userId !== payload.userId.trim() ||
+  if (payload.appId !== payload.appId.trim() ||
       (payload.dataDirectory !== undefined && payload.dataDirectory !== payload.dataDirectory.trim())) {
     return failure('feishu-channel/invalid-input', '配置字段前后不能包含空格。')
   }
-  if (payload.userId && !/^ou_[A-Za-z0-9_-]+$/.test(payload.userId)) {
-    return failure('feishu-channel/invalid-user-id', '操作人 ID 必须是飞书 open_id（ou_ 开头）。')
+  if (!operatorIds(payload.userId)) {
+    return failure('feishu-channel/invalid-user-id', '操作人必须是飞书 open_id（ou_ 开头），多个 ID 用英文逗号分隔。')
   }
   return null
 }
 
 /** 为一个插件实例创建配置请求处理器。 */
-export function createChannelSettingsHandler(ctx, config, entry = ctx.fiber.entry) {
+export function createChannelSettingsHandler(ctx, config, entry = ctx.fiber.entry, getLastGroupCard) {
   return async (endpoint, payload, signal, peer) => {
     if (peer?.principal?.kind !== 'owner' || peer.signal?.aborted) return failure('feishu-channel/denied', '仅所有者可访问飞书配置。')
     if (signal?.aborted) return failure('feishu-channel/cancelled', '请求已取消。')
@@ -49,14 +52,28 @@ export function createChannelSettingsHandler(ctx, config, entry = ctx.fiber.entr
     } catch {
       return failure('feishu-channel/credential-read-failed', '读取飞书凭据状态失败。')
     }
-    if (endpoint === `${prefix}read`) return { ok: true, value: publicSettings(config, secretConfigured) }
+    if (endpoint === `${prefix}read`) return { ok: true, value: publicSettings(config, secretConfigured, getLastGroupCard?.()) }
 
     const invalid = validateInput(payload)
     if (invalid) return invalid
+    const source = payload.tapdCardSource
+    if (source !== undefined && (!source || typeof source !== 'object' || Array.isArray(source) ||
+        !['chatId', 'senderId', 'operatorId'].every(key => typeof source[key] === 'string'))) {
+      return failure('feishu-channel/invalid-source', 'TAPD 卡片来源格式无效。')
+    }
+    const tapdCardSource = source === undefined ? config.tapdCardSource : {
+      chatId: source.chatId.trim(), senderId: source.senderId.trim(), operatorId: source.operatorId.trim(),
+    }
+    const operators = operatorIds(payload.userId)
+    if (tapdCardSource && Object.values(tapdCardSource).some(Boolean) &&
+        (!/^oc_[A-Za-z0-9_-]{1,200}$/u.test(tapdCardSource.chatId) ||
+          !/^[A-Za-z0-9_-]{1,200}$/u.test(tapdCardSource.senderId) || !isOperatorId(tapdCardSource.operatorId) ||
+          (operators.length && !operators.includes(tapdCardSource.operatorId)))) {
+      return failure('feishu-channel/invalid-source', '请填写有效的群 ID、机器人发送方 ID 和任务操作人 Open ID。操作人名单已填写时，此人须在名单内。')
+    }
     const dataDirectory = payload.dataDirectory ?? config.dataDirectory ?? ''
     if (payload.enabled) {
       if (!payload.appId) return failure('feishu-channel/app-id-required', '启用前请填写飞书 App ID。')
-      if (!payload.userId) return failure('feishu-channel/user-id-required', '启用前请填写操作人 open_id。')
       if (!isAbsolute(dataDirectory)) return failure('feishu-channel/data-directory-required', '启用前请填写绝对路径的数据目录。')
       if (!Array.isArray(config.projects) || !config.projects.length) {
         return failure('feishu-channel/projects-required', '启用前请在插件配置中添加项目。')
@@ -84,7 +101,8 @@ export function createChannelSettingsHandler(ctx, config, entry = ctx.fiber.entr
       await ctx.configEditor.edit(entry, current => ({
         ...current,
         appId: payload.appId,
-        userId: payload.userId,
+        userId: operators.join(','),
+        ...(tapdCardSource && { tapdCardSource }),
         enabled: payload.enabled,
         dataDirectory,
       }))
@@ -93,13 +111,13 @@ export function createChannelSettingsHandler(ctx, config, entry = ctx.fiber.entr
         ? failure('feishu-channel/partial-save', '飞书凭据已保存，但插件配置保存失败。请重新读取配置。')
         : failure('feishu-channel/config-save-failed', '插件配置保存失败。')
     }
-    return { ok: true, value: publicSettings({ ...config, ...payload, dataDirectory }, secretConfigured || secretSaved) }
+    return { ok: true, value: publicSettings({ ...config, ...payload, userId: operators.join(','), tapdCardSource, dataDirectory }, secretConfigured || secretSaved, getLastGroupCard?.()) }
   }
 }
 
 /** 注册仅供已认证所有者调用的 Connection 精确路由。 */
-export function registerChannelSettings(ctx, config, entry = ctx.fiber.entry) {
-  const handle = createChannelSettingsHandler(ctx, config, entry)
+export function registerChannelSettings(ctx, config, entry = ctx.fiber.entry, getLastGroupCard) {
+  const handle = createChannelSettingsHandler(ctx, config, entry, getLastGroupCard)
   for (const method of ['read', 'save']) {
     const endpoint = `${prefix}${method}`
     ctx.connection.fetch.register({

@@ -39,8 +39,14 @@ function historyItem(task) {
       status: task.attempt.development.status, summary: task.attempt.development.summary,
     },
     rework: task.rework, error: task.error,
+    attachments: (task.attachments ?? []).map(({ id, mimeType, width, height, byteLength }) => ({ id, mimeType, width, height, byteLength })),
+    manualReview: task.manualReview,
     work: task.work && { branch: task.work.branch },
-    result: task.result && { branch: task.result.branch, commit: task.result.commit, changes: task.result.changes, checks: task.result.checks, remote: task.result.remote },
+    result: task.result && {
+      branch: task.result.branch, commit: task.result.commit, changes: task.result.changes,
+      checks: task.result.checks, remote: task.result.remote, changeReview: task.result.changeReview,
+      operationEvidence: task.result.operationEvidence,
+    },
   }
 }
 

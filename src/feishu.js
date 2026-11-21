@@ -1,4 +1,203 @@
 import { createHash } from 'node:crypto';
+import { MAX_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENTS, validateAttachmentImage } from './attachments.js';
+
+const tokenUrl = 'https://accounts.feishu.cn/oauth/v3/token';
+const messageApi = 'https://open.feishu.cn/open-apis/im/v1/messages';
+
+function isMessageId(value) {
+  return typeof value === 'string' && /^om_[A-Za-z0-9_-]{1,200}$/.test(value);
+}
+
+function isImageKey(value) {
+  return typeof value === 'string' && /^img_[A-Za-z0-9_-]{1,200}$/.test(value);
+}
+
+function imageKeys(message) {
+  const type = message.rawContentType;
+  const raw = message.raw?.message?.content;
+  if (!['image', 'post'].includes(type) || typeof raw !== 'string' || raw.length > 128 * 1024) return [];
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
+  if (type === 'image') return isImageKey(data.image_key) ? [data.image_key] : [];
+
+  // Structured image nodes belong to the message. Markdown text can contain arbitrary links and keys.
+  const post = ('title' in data || 'content' in data || 'content_v2' in data) ? data :
+    ['zh_cn', 'en_us', 'ja_jp', ...Object.keys(data)].map(key => data[key]).find(value => value && typeof value === 'object');
+  const paragraphs = post?.content_v2?.length ? post.content_v2 : post?.content;
+  if (!Array.isArray(paragraphs)) return [];
+  const keys = new Set();
+  for (const paragraph of paragraphs) {
+    if (!Array.isArray(paragraph)) continue;
+    for (const element of paragraph) {
+      if (element?.tag === 'img' && isImageKey(element.image_key)) keys.add(element.image_key);
+      if (keys.size > MAX_TASK_ATTACHMENTS) return [...keys];
+    }
+  }
+  return [...keys];
+}
+
+export function groupCardSource(message) {
+  if (message.chatType !== 'group' || !['app', 'bot'].includes(message.senderType) ||
+      message.rawContentType !== 'interactive' || !isMessageId(message.messageId) ||
+      !/^oc_[A-Za-z0-9_-]{1,200}$/u.test(message.chatId)) return null;
+  const sender = message.raw?.sender?.sender_id;
+  const senderIds = [message.senderId, sender?.open_id, sender?.app_id, sender?.user_id]
+    .filter(id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,200}$/u.test(id));
+  return senderIds.length ? { chatId: message.chatId, senderIds } : null;
+}
+
+function isTapdCardSource(message, source) {
+  const observed = groupCardSource(message);
+  return observed && observed.chatId === source?.chatId && isOpenId(source.operatorId) &&
+    observed.senderIds.includes(source.senderId);
+}
+
+// Feishu's receive event may contain the flattened card format instead of the original card DSL.
+function receivedCardText(raw) {
+  if (typeof raw !== 'string' || raw.length > 128 * 1024) return '';
+  let card;
+  try { card = JSON.parse(raw); } catch { return ''; }
+  if (typeof card?.title !== 'string' || !Array.isArray(card.elements)) return '';
+  const rows = card.elements.filter(Array.isArray).map(row => row.map(element => {
+    if (['text', 'a', 'lark_md', 'plain_text', 'markdown'].includes(element?.tag)) {
+      const value = element.text ?? element.content;
+      return typeof value === 'string' ? value : '';
+    }
+    return '';
+  }).join(''));
+  return [card.title, ...rows].join('\n');
+}
+
+export function normalizeTapdCard(message, source) {
+  if (!isTapdCardSource(message, source)) return null;
+  for (const content of [receivedCardText(message.raw?.message?.content), message.content]) {
+    const card = parseTapdCardText(content);
+    if (card) return { group: true, tapdCard: true, eventId: message.messageId,
+      chatId: message.chatId, userId: source.operatorId, text: `${card.title}\n${card.details}` };
+  }
+  return null;
+}
+
+function parseTapdCardText(content) {
+  if (typeof content !== 'string' || !content.trim()) return null;
+  content = content.trim();
+  const header = /^(开发需求|修复缺陷|修复bug)\s*[｜|]\s*([^\r\n]+)$/iu;
+  const [heading, ...lines] = content.split(/\r?\n/u);
+  const title = heading.trim().replace(/^\*\*(.+)\*\*$/u, '$1');
+  if (!header.test(title)) return null;
+  const details = lines.join('\n').match(/(?:^|\n)[ \t]*(?:\*\*)?详细描述(?:\*\*)?[：:](?:\*\*)?[ \t]*([\s\S]*?)(?=\n[ \t]*(?:\*\*)?(?:标题(?:\*\*)?[：:]|此消息由TAPD自动化助手触发)|$)/u)?.[1].trim();
+  if (!details) return null;
+  return { title, details };
+}
+
+/** Normalize a human message from a DM or group and retain only structured image resources. */
+export function normalizeFeishuMessage(message) {
+  if (!['p2p', 'group'].includes(message.chatType) || message.senderType !== 'user' ||
+      !['text', 'post', 'merge_forward', 'image'].includes(message.rawContentType)) return null;
+  const openId = message.raw?.sender?.sender_id?.open_id;
+  if (!isOpenId(openId) || openId !== message.senderId ||
+      typeof message.chatId !== 'string' || !message.chatId ||
+      typeof message.messageId !== 'string' || !message.messageId) return null;
+
+  const keys = isMessageId(message.messageId) ? imageKeys(message) : [];
+  if (message.rawContentType === 'image' && !keys.length) return null;
+  let text = message.rawContentType === 'image' ? '' : message.content;
+  if (keys.length && typeof text === 'string') {
+    for (const key of keys) text = text.replaceAll(`![image](${key})`, '');
+    text = text.trim();
+  }
+  const incoming = { eventId: message.messageId, chatId: message.chatId, userId: openId, text, replyTo: message.replyToMessageId };
+  if (message.chatType === 'group') incoming.group = true;
+  if (isMessageId(message.rootId)) incoming.replyRoot = message.rootId;
+  if (keys.length) incoming.attachments = keys.map(key => ({ kind: 'image', messageId: message.messageId, key }));
+  return incoming;
+}
+
+async function boundedBody(response, limit) {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('Empty Feishu response');
+  try {
+    const length = response.headers.get('content-length');
+    if (length !== null && (!/^\d+$/.test(length) || Number(length) > limit)) throw new Error('Feishu response too large');
+    const chunks = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks, size);
+      size += value.byteLength;
+      if (size > limit) throw new Error('Feishu response too large');
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
+/** Retrieve an authorized resource through Feishu's fixed HTTPS API endpoints. */
+export function createFeishuAttachmentDownloader({ appId, appSecret, fetchImpl = globalThis.fetch }) {
+  let token;
+  let tokenRequest;
+
+  async function requestToken() {
+    const response = await fetchImpl(tokenUrl, {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
+      body: new URLSearchParams({ grant_type: 'client_credentials', client_id: appId, client_secret: appSecret }),
+    });
+    if (response.status !== 200) {
+      await response.body?.cancel();
+      throw new Error('Feishu token request failed');
+    }
+    const data = JSON.parse((await boundedBody(response, 16 * 1024)).toString('utf8'));
+    if (data?.code !== 0 || typeof data.access_token !== 'string' ||
+        !/^[A-Za-z0-9._~+/=-]{1,8192}$/.test(data.access_token) ||
+        !Number.isSafeInteger(data.expires_in) || data.expires_in <= 0 || data.expires_in > 7200) {
+      throw new Error('Invalid Feishu token response');
+    }
+    return { value: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 };
+  }
+
+  async function getToken() {
+    if (token?.expiresAt > Date.now() + 30_000) return token;
+    tokenRequest ??= requestToken().then(result => { token = result; return result; }).finally(() => { tokenRequest = undefined; });
+    return tokenRequest;
+  }
+
+  async function getResource(ref, credential, signal) {
+    return fetchImpl(`${messageApi}/${ref.messageId}/resources/${ref.key}?type=image`, {
+      headers: { Authorization: `Bearer ${credential.value}` }, redirect: 'error', signal,
+    });
+  }
+
+  return async function downloadAttachment(ref) {
+    if (ref?.kind !== 'image' || !isMessageId(ref.messageId) || !isImageKey(ref.key)) {
+      throw new TypeError('Invalid Feishu attachment reference');
+    }
+    try {
+      const signal = AbortSignal.timeout(20_000);
+      const credential = await getToken();
+      let response = await getResource(ref, credential, signal);
+      if (response.status === 401) {
+        await response.body?.cancel();
+        if (token === credential) token = undefined;
+        response = await getResource(ref, await getToken(), signal);
+      }
+      if (response.status !== 200) {
+        await response.body?.cancel();
+        throw new Error('Feishu resource request failed');
+      }
+      return validateAttachmentImage(await boundedBody(response, MAX_ATTACHMENT_BYTES), response.headers.get('content-type'));
+    } catch {
+      // Transport errors and API responses can expose the application credentials.
+      throw new Error('Feishu image download or validation failed');
+    }
+  };
+}
 
 /** 校验飞书 Open ID，避免把其他类型的用户标识交给业务层。 */
 function isOpenId(value) {
@@ -99,7 +298,7 @@ function actionEventId(event) {
 }
 
 /** 创建飞书长连接适配器；SDK 依赖由集成方安装。 */
-export async function createFeishuChannel({ appId, appSecret, onMessage, onAction, onError }) {
+export async function createFeishuChannel({ appId, appSecret, tapdCardSource, onGroupCard, onMessage, onAction, onError }) {
   if (typeof appId !== 'string' || !appId || typeof appSecret !== 'string' || !appSecret ||
       typeof onMessage !== 'function' || typeof onAction !== 'function' ||
       typeof onError !== 'function') {
@@ -112,11 +311,13 @@ export async function createFeishuChannel({ appId, appSecret, onMessage, onActio
     appSecret,
     transport: 'websocket',
     includeRawEvent: true,
+    policy: { requireMention: false },
     httpTimeoutMs: 15000,
     connectTimeoutMs: 30000,
     safety: { chatQueue: { enabled: true, cardActions: 'separate' } },
   });
   let started = null;
+  const downloadAttachment = createFeishuAttachmentDownloader({ appId, appSecret });
 
   /** 将异步事件处理错误送交宿主，避免回调异常丢失。 */
   function reportError(error) {
@@ -127,24 +328,38 @@ export async function createFeishuChannel({ appId, appSecret, onMessage, onActio
     }
   }
 
-  /** 只接收真人在单聊中发送的内容，并统一使用 open_id。 */
-  channel.on('message', async (message) => {
-    if (message.chatType !== 'p2p' || message.senderType !== 'user' ||
-        !['text', 'post', 'merge_forward'].includes(message.rawContentType)) return;
-    const openId = message.raw?.sender?.sender_id?.open_id;
-    if (!isOpenId(openId) || openId !== message.senderId ||
-        typeof message.chatId !== 'string' || !message.chatId ||
-        typeof message.messageId !== 'string' || !message.messageId) return;
+  // Observe platform delivery even if SDK normalization or policy drops the event.
+  channel.onRawEvent('im.message.receive_v1', event => {
+    const raw = event.message;
+    const observed = groupCardSource({ chatType: raw?.chat_type, rawContentType: raw?.message_type,
+      chatId: raw?.chat_id, messageId: raw?.message_id, senderType: event.sender?.sender_type, raw: event });
+    if (observed) onGroupCard?.({ chatId: observed.chatId, senderId: observed.senderIds[0], receivedAt: Date.now(),
+      messageId: raw.message_id, status: 'received' });
+  });
 
+  /** 处理单聊和群聊消息，并统一使用 open_id。 */
+  channel.on('message', async (message) => {
     try {
-      const reply = await onMessage({
-        eventId: message.messageId,
-        chatId: message.chatId,
-        userId: openId,
-        text: message.content,
-        replyTo: message.replyToMessageId,
-      });
-      if (reply) await channel.reply(message, { text: reply });
+      const observed = groupCardSource(message);
+      const recordCard = status => {
+        if (observed) onGroupCard?.({ chatId: observed.chatId, senderId: observed.senderIds[0],
+          messageId: message.messageId, receivedAt: Date.now(), status });
+      };
+      if (observed) recordCard(isTapdCardSource(message, tapdCardSource) ? 'content' : 'source');
+      let incoming = normalizeFeishuMessage(message) ?? normalizeTapdCard(message, tapdCardSource);
+      if (!incoming && isTapdCardSource(message, tapdCardSource)) {
+        const fetched = await channel.fetchMessage(message.messageId);
+        if (fetched) incoming = normalizeTapdCard({ ...message, content: fetched.content, raw: { ...message.raw, message: fetched.raw?.message } }, tapdCardSource);
+        if (!incoming) {
+          const [item] = await channel.fetchRawMessage(message.messageId);
+          if (item?.message_id === message.messageId) incoming = normalizeTapdCard({ ...message,
+            raw: { ...message.raw, message: { content: item.body?.content } } }, tapdCardSource);
+        }
+      }
+      if (!incoming) return;
+      const reply = await onMessage(incoming);
+      if (incoming.tapdCard) recordCard('parsed');
+      else if (reply) await channel.reply(message, { text: reply });
     } catch (error) {
       reportError(error);
     }
@@ -185,6 +400,8 @@ export async function createFeishuChannel({ appId, appSecret, onMessage, onActio
   channel.on('error', reportError);
 
   return {
+    downloadAttachment,
+
     /** 建立长连接；重复调用复用同一次连接。 */
     async start() {
       if (!started) {
