@@ -68,7 +68,9 @@ projects:
 
 ## 操作验证与人工审核
 
-在需求正文写出要验证的操作和预期结果，例如「打开最长的任务详情，滚到底部，点击顶部项目仓库标签。预期标签可见且能打开仓库页」。涉及可复现操作的任务由 Host 执行项目配置中的 `kind: operation` 检查。为项目配置由维护者控制的验证程序，放在任务工作树之外，并使用绝对路径。程序从 `FEISHU_OPERATION_VALIDATION` 读取验证场景，`FEISHU_VALIDATED_COMMIT` 提供待验证提交。程序执行实际操作并断言结果后，在 stdout 输出一行 `FEISHU_OPERATION_EVIDENCE ` 加 JSON。JSON 包含 `operation`、`expected`、顺序一致的 `steps`（每步有 `action`、`observed`）、整体 `observed` 和 `passed: true`。缺陷任务还需要 `baseline: { reproduced: true, observed: "实际复现结果" }`。未配置验证程序或缺少有效操作记录时，任务会阻塞并保留原因。
+在需求正文写出要验证的操作和预期结果，例如「打开最长的任务详情，滚到底部，点击顶部项目仓库标签。预期标签可见且能打开仓库页」。没有项目操作检查时，插件会委派验证 Agent 在任务工作树运行待验提交，逐步实际操作。插件从 Codex 或 Claude Code 的命令工具结果采集证据，把提交、验证委派 ID、逐步观察、工具记录 ID 和输出 SHA-256 保存在任务详情。摘要和编译结果无法单独通过操作验证。缺陷修复还需要复现基线问题。Agent 需要能够启动并操作指定环境，缺少环境或逐步记录时任务会阻塞。
+
+仍可配置由维护者控制的 `kind: operation` 检查。验证程序放在任务工作树之外，使用绝对路径。程序从 `FEISHU_OPERATION_VALIDATION` 读取验证场景，`FEISHU_VALIDATED_COMMIT` 提供待验证提交。实际操作并断言结果后，程序在 stdout 输出 `FEISHU_OPERATION_EVIDENCE ` 加 JSON。字段包括 `operation`、`expected`、顺序一致的 `steps`（每步有 `action`、`observed`）、整体 `observed` 和 `passed: true`。缺陷任务还需要 `baseline: { reproduced: true, observed: "实际复现结果" }`。
 
 与原需求冲突的替代方案通过飞书卡片交给操作人审核。文件删除可以在需求正文单独一行写 `删除文件：repo/relative.txt` 授权指定路径。提交中其他删除及匹配可疑脚本规则的变更会在 Host 运行项目检查和推送之前进入人工审核。脚本规则覆盖常见风险模式，告警需要结合变更内容判断。审核与待交付提交绑定。Agent 在独立工作树内使用开发 provider 已配置的权限。当前 Desktop provider 没有把单次文件删除转给飞书审批的接口，因此审批约束 Host 执行检查和推送。开发提示也要求在执行可疑脚本或删除范围不明确的文件前停下并报告。验证和审核通过后由 Host 自动推送。
 

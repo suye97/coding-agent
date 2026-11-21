@@ -63,7 +63,7 @@ export function createHarness(ctx, config, { loadAttachment } = {}) {
   const output = createModelOutputObserver(ctx)
 
   // 在指定工作目录运行委派并清理子智能体资源。
-  async function run({ task, project, signal, recordRun, recordSession, recordResult = () => {}, recordOutput = () => {} }, stage, instructions) {
+  async function run({ task, project, signal, recordRun, recordSession, recordResult = () => {}, recordOutput = () => {}, recordAssertion }, stage, instructions) {
     const provider = stage === 'design' ? config.designProvider : config.developmentProvider
     if (!config.providerPoliciesVerified || !provider) {
       throw new Error('Claude Code 委派尚未完成配置或权限联调。')
@@ -79,7 +79,7 @@ export function createHarness(ctx, config, { loadAttachment } = {}) {
     let release
     const observation = output.observe(cwd, text => {
       if (!signal.aborted) recordOutput(text)
-    })
+    }, recordAssertion)
     const dispose = () => release ??= Promise.resolve().then(() => activation.dispose())
     const cancel = () => { observation.stop(); void dispose().catch(() => {}) }
     try {
@@ -120,6 +120,28 @@ export function createHarness(ctx, config, { loadAttachment } = {}) {
   }
 
   return {
+    async verifyOperation(input) {
+      const assertions = []
+      const { task, commit, validation } = input
+      const output = await run({ ...input, recordAssertion: item => {
+        if (assertions.length < 64) assertions.push(item)
+      } }, 'verify', [
+        '你是交付验证 Agent。在当前任务工作树启动已提交的版本，实际操作应用并核对结果。需要时可编写临时验证程序，放在工作树之外，结束后清理你启动的进程和临时文件。现有项目文件、Git 引用和配置保持原样。不要推送、部署、连接真实客户服务或改动用户正在使用的应用。',
+        '按顺序执行下方每个步骤。用应用要求的运行环境：明确要求 DSH Desktop 时，要实际加载该提交的 Desktop 版本。浏览器替身、模拟 Host 或源码检查只能作诊断。缺少环境或权限时报告阻塞。缺陷任务在独立临时目录实际复现 baseCommit 的缺陷，再验证修复。',
+        '证据由工具输出采集。让实际操作程序仅在对应行为断言通过后向 stdout 写一行 FEISHU_AGENT_OBSERVATION 加 JSON，字段为 commit、step（按步骤从 1 编号）、observed（具体观察，最多 500 字符）。缺陷基线复现时输出 step 为 0，commit 为 baseCommit，observed 为复现结果。仅打印文字、退出码或将预期复制为观察不能作为验证。',
+        '结束时只输出 JSON。通过时为 {"status":"passed","observed":"整体实际结果"}；失败或环境不可用为 {"status":"blocked","summary":"失败的步骤或缺少的条件"}。如果实测发现更优方案但会改变用户要求，返回 {"status":"alternative","summary":"发现的问题","alternative":{"summary":"方案","impact":"与原意的差异","validation":{"kind":"operation","operation":"操作","steps":["步骤"],"expected":"预期"}}}，等待审批。',
+        JSON.stringify({ commit, validation, requirement: task.requirement.body }),
+      ].join('\n'))
+      let verdict
+      try { verdict = JSON.parse(output.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu, '$1')) } catch {
+        throw new Error('验证 Agent 未返回有效的验证结果。')
+      }
+      if (verdict?.status === 'alternative' && normalizeAlternative(verdict.alternative)) return { alternative: normalizeAlternative(verdict.alternative) }
+      if (verdict?.status !== 'passed' || !field(verdict.observed, 500)) {
+        throw new Error(field(verdict?.summary, 600) ? `操作验证受阻：${verdict.summary}` : '验证 Agent 未完成实际操作。')
+      }
+      return { observed: verdict.observed, assertions }
+    },
     // 生成与任务类型一致的只读设计方案。
     async design(input) {
       const { task } = input

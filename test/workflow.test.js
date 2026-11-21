@@ -184,6 +184,40 @@ test('complete requests run automatically through verification and rework', asyn
   assert.equal(app.card().title, '已验收')
 })
 
+test('operation verification delegates when no project command reports and saves tool evidence before push', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.setOperationReports(() => [])
+  app.runner.verifyOperation = async ({ commit, validation, recordRun }) => {
+    recordRun('verify-child', 'codex')
+    return { observed: '按钮交互通过', assertions: validation.steps.map((_, index) => ({
+      id: `command-${index}`, sha256: 'a'.repeat(64), line: JSON.stringify({ commit, step: index + 1, observed: `界面结果 ${index + 1}` }),
+    })) }
+  }
+  app.send('开发需求｜订单\n点击保存后刷新页面')
+  await app.work()
+  await app.work()
+  const [task] = app.store().inStage('review')
+  assert.equal(task.result.operationEvidence.childId, 'verify-child')
+  assert.equal(task.result.operationEvidence.steps[1].outputSha256, 'a'.repeat(64))
+  assert.deepEqual(app.pushes, ['abcdef'])
+})
+
+test('verification agent claims without matching tool evidence block delivery', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.setOperationReports(() => [])
+  app.runner.verifyOperation = async ({ recordRun }) => {
+    recordRun('verify-child', 'codex')
+    return { observed: '已通过', assertions: [{ id: 'tool', sha256: 'a'.repeat(64), line: JSON.stringify({ commit: 'stale', step: 1, observed: '旧版本' }) }] }
+  }
+  app.send('开发需求｜订单\n点击保存后刷新页面')
+  await app.work()
+  await app.work()
+  assert.match(app.store().inStage('blocked')[0].error, /待验提交匹配/)
+  assert.deepEqual(app.pushes, [])
+})
+
 test('passing compile output and agent assertions cannot satisfy UI operation validation', async t => {
   const app = await fixture(t)
   app.setOperationReports(() => ['Compiled successfully'])

@@ -154,6 +154,29 @@ for (const kind of ['claude', 'codex']) {
   })
 }
 
+test('operation evidence comes from completed tool output on the verification turn', async () => {
+  const { ctx, input } = fixture()
+  const { stdout, terminal, started } = liveProvider(ctx, ['node', 'codex.js', 'app-server', '--stdio'])
+  const runner = createHarness(ctx, { developmentProvider: 'codex', providerPoliciesVerified: true })
+  const pending = runner.verifyOperation({ ...input, commit: 'commit', validation })
+  await started
+  const packet = (method, params) => write(stdout, { method, params: { threadId: 'thread', turnId: 'turn', ...params } })
+  const line = JSON.stringify({ commit: 'commit', step: 1, observed: '界面显示已更新' })
+  const item = { id: 'real-tool', type: 'commandExecution', status: 'completed', exitCode: 0,
+    aggregatedOutput: `log\nFEISHU_AGENT_OBSERVATION ${line}\n` }
+  packet('turn/started', { turn: { id: 'turn' } })
+  packet('item/completed', { item: { ...item, type: 'agentMessage' } })
+  packet('item/completed', { turnId: 'older-turn', item })
+  packet('item/completed', { item: { ...item, exitCode: 1 } })
+  packet('item/completed', { item })
+  terminal.resolve({ stopReason: 'completed', output: [{ type: 'text', text: '{"status":"passed","observed":"界面已更新"}' }] })
+  const result = await pending
+  assert.equal(result.assertions.length, 1)
+  assert.equal(result.assertions[0].id, 'real-tool')
+  assert.equal(result.assertions[0].line, line)
+  assert.match(result.assertions[0].sha256, /^[a-f0-9]{64}$/)
+})
+
 test('cancellation detaches the observer and keeps the terminal cancellation behavior', async () => {
   const { ctx, input } = fixture()
   const { stdout, terminal, started } = liveProvider(ctx, ['claude', '--output-format', 'stream-json', '--input-format', 'stream-json'])

@@ -49,6 +49,35 @@ function observedOperation(validation, reports, task) {
   return evidence
 }
 
+function agentOperationEvidence(validation, report, commit, attempt) {
+  const { observed, assertions } = report
+  const firstStep = validation.type === 'fix' ? 0 : 1
+  const observations = []
+  if (!observation(observed) || !attempt?.childId || !Array.isArray(assertions)) {
+    throw new Error('验证 Agent 缺少实际操作工具记录。')
+  }
+  for (const assertion of assertions) {
+    let record
+    try { record = JSON.parse(assertion.line) } catch { continue }
+    const step = firstStep + observations.length
+    if (step > validation.steps.length || record?.step !== step ||
+        record.commit !== (step === 0 ? validation.baseCommit : commit) || !observation(record.observed) ||
+        typeof assertion.id !== 'string' || !/^[a-f0-9]{64}$/u.test(assertion.sha256)) continue
+    observations.push({ observed: record.observed.trim(), toolId: assertion.id, outputSha256: assertion.sha256 })
+  }
+  if (observations.length !== validation.steps.length + (firstStep === 0 ? 1 : 0)) {
+    throw new Error('验证 Agent 缺少与待验提交匹配的逐步工具记录，或缺少基线复现。')
+  }
+  const baseline = firstStep === 0 ? observations.shift() : undefined
+  if (baseline?.observed === observed.trim()) throw new Error('缺陷复现与修复结果相同。')
+  return {
+    kind: 'operation', source: 'agent', commit, childId: attempt.childId, provider: attempt.provider,
+    operation: validation.operation, expected: validation.expected, observed: observed.trim(),
+    steps: validation.steps.map((action, index) => ({ action, ...observations[index] })),
+    ...(baseline && { baseline: baseline.observed, baselineTool: baseline }),
+  }
+}
+
 const titles = {
   confirm: '待补充需求', design_queued: '等待设计', designing: '设计中', approval: '历史待审批', held: '历史暂缓任务',
   queued: '开发已入队', developing: '开发中', verify_queued: '等待验证', verifying: '验证中', blocked: '任务阻塞',
@@ -394,7 +423,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
     const signal = running.signal
     const persist = stage => store.transaction(() => {
       signal.throwIfAborted()
-      if (store.get(task.id)?.attempt?.id !== task.attempt.id || store.get(task.id)?.stage === 'cancelled') throw new Error('任务运行已结束。')
+      if (store.get(task.id)?.attempt?.id !== attemptId || store.get(task.id)?.stage === 'cancelled') throw new Error('任务运行已结束。')
       update(task, stage)
     })
     const recordRun = (childId, provider) => {
@@ -403,7 +432,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
       task.attempt.heartbeatAt = Date.now()
       persist(task.stage)
     }
-    const attemptId = task.attempt.id
+    let attemptId = task.attempt.id
     let output = ''
     let truncated = false
     let outputTimer
@@ -512,7 +541,27 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
       }
       if (!result.checks?.length || !result.checks.every(check => check.passed)) throw new Error('验证未通过，请查看检查结果。')
       if (operationValidation) {
-        result.operationEvidence = { ...observedOperation(operationValidation, operationReports, task), commit: result.commit }
+        if (operationReports?.length || !runner.verifyOperation) {
+          result.operationEvidence = { ...observedOperation(operationValidation, operationReports, task), commit: result.commit }
+        } else {
+          if (task.attempt.kind !== 'verifying') {
+            flushOutput()
+            task.attempt = { id: randomUUID(), kind: 'verifying', startedAt: Date.now(), status: 'running' }
+            persist('verifying')
+            attemptId = task.attempt.id
+            output = ''
+            truncated = false
+          }
+          const evidence = await runner.verifyOperation({ task, project, signal, recordRun, recordSession, recordResult, recordOutput,
+            validation: operationValidation, commit: result.commit })
+          if (evidence.alternative) {
+            task.manualReview = { kind: 'alternative', proposal: evidence.alternative, sourceStage: task.stage }
+            persist('manual_review')
+            return
+          }
+          result.operationEvidence = agentOperationEvidence(operationValidation, evidence, result.commit, task.attempt)
+          persist('verifying')
+        }
       }
       const pushed = await repository.push({ task, project, signal, result })
       task.work.pushedCommit = pushed.commit

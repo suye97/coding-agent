@@ -244,7 +244,7 @@ window.__ModuleLoader__.load({
           development && h('div', { className: 'feishu-development-response' }, field('developmentOutput', development.summary)),
            proposal && [field('reviewProposal', proposal.summary), field('reviewImpact', proposal.impact)],
            result?.changeReview && [field('reviewDeletions', result.changeReview.unapprovedDeletions?.join('\n')), field('reviewWarnings', result.changeReview.warnings?.map(({ path, reason }) => `${path} · ${reason}`).join('\n'))],
-           result?.operationEvidence && field('operationEvidence', [result.operationEvidence.operation, result.operationEvidence.baseline, ...result.operationEvidence.steps.map(({ action, observed }) => `${action} → ${observed}`), result.operationEvidence.expected, result.operationEvidence.observed].filter(Boolean).join('\n')),
+           result?.operationEvidence && field('operationEvidence', [result.operationEvidence.operation, result.operationEvidence.childId, result.operationEvidence.baseline, ...result.operationEvidence.steps.map(({ action, observed, toolId, outputSha256 }) => [ `${action} → ${observed}`, toolId, outputSha256 ].filter(Boolean).join('\n')), result.operationEvidence.expected, result.operationEvidence.observed].filter(Boolean).join('\n')),
           result && [field('branch', result.branch), field('commit', result.commit), field('push', result.remote && `${result.remote}/${result.branch}`), field('changes', result.changes), field('checks', result.checks?.map(check => `${t(check.passed ? 'passed' : 'failed')} · ${check.label}${check.output ? `\n${check.output}` : ''}`).join('\n'))])
       }))
     }

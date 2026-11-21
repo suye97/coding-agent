@@ -1,4 +1,35 @@
+# IDE and operating system files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Dependencies, build and test output
 node_modules/
 .npm-cache/
+.cache/
+/dist/
+/coverage/
+/playwright-report/
+/test-results/
 *.tgz
+
+# Logs and local runtime state
+log/
+logs/
+*.log
 *.sqlite*
+*.db
+*.db-shm
+*.db-wal
+/.dsh/
+/attachments/
+/worktrees/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!.env.sample

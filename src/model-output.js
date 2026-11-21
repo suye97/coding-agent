@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { createHash } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import { basename, normalize } from 'node:path'
 
@@ -104,6 +105,42 @@ function codexText(append) {
   }
 }
 
+// Capture assertion records from completed provider tool results, independently of assistant text.
+function observeAssertions(kind, record) {
+  const pending = new Set()
+  let thread, turn
+  function consume(id, output) {
+    if (typeof id !== 'string' || typeof output !== 'string') return
+    const sha256 = createHash('sha256').update(output).digest('hex')
+    for (const line of output.split(/\r?\n/u)) {
+      if (line.startsWith('FEISHU_AGENT_OBSERVATION ') && line.length <= 1500) {
+        record({ id, sha256, line: line.slice('FEISHU_AGENT_OBSERVATION '.length) })
+      }
+    }
+  }
+  return packet => {
+    if (kind === 'codex') {
+      const params = packet?.params
+      if (packet?.method === 'turn/started' && turn === undefined) {
+        thread = params?.threadId
+        turn = params?.turn?.id
+      }
+      const item = params?.item
+      if (turn && params?.threadId === thread && params.turnId === turn && packet.method === 'item/completed' &&
+          item?.type === 'commandExecution' && item.status === 'completed' && item.exitCode === 0) consume(item.id, item.aggregatedOutput)
+      return
+    }
+    const blocks = packet?.message?.content
+    if (!Array.isArray(blocks) || packet.parent_tool_use_id != null || packet.error) return
+    for (const block of blocks) {
+      if (packet.type === 'assistant' && block.type === 'tool_use' && block.name === 'Bash') pending.add(block.id)
+      if (packet.type !== 'user' || block.type !== 'tool_result' || !pending.delete(block.tool_use_id) || block.is_error) continue
+      const text = Array.isArray(block.content) ? block.content.filter(part => part.type === 'text').map(part => part.text).join('\n') : block.content
+      consume(block.tool_use_id, text)
+    }
+  }
+}
+
 function protocol(argv) {
   const entry = basename(argv[0] ?? '').toLowerCase()
   if (argv[1] === 'app-server' && argv[2] === '--stdio' && /^codex(?:\.exe)?$/.test(entry)) return 'codex'
@@ -133,7 +170,9 @@ export function createModelOutputObserver(ctx) {
           const child = target.spawn(launch)
           if (child.stdout) {
             const append = text => run.active && run.append(text)
-            run.detach = readFrames(child.stdout, kind === 'claude' ? claudeText(append) : codexText(append))
+            const text = kind === 'claude' ? claudeText(append) : codexText(append)
+            const assertions = run.record && observeAssertions(kind, item => run.active && run.record(item))
+            run.detach = readFrames(child.stdout, packet => { text(packet); assertions?.(packet) })
           }
           return child
         }
@@ -142,8 +181,8 @@ export function createModelOutputObserver(ctx) {
   })
 
   return {
-    observe(cwd, append) {
-      const run = { cwd, append, active: true }
+    observe(cwd, append, record) {
+      const run = { cwd, append, record, active: true }
       return {
         activate: start => current.run(run, start),
         stop() {
