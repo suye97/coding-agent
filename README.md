@@ -72,7 +72,7 @@ projects:
 
 需要操作验证时，Host 在变更审核和固定项目检查通过后依次选择证据：优先采用维护者配置的 `kind: operation` 项目检查报告；没有报告时，复核开发 Agent 在同一待交付提交上已经采集的完整实测证据；证据缺失、过期或步骤不完整时，才委派独立验证 Agent 补验。推送失败后的重试复用同一提交的有效证据；缺陷返工可复用同一基线已有的复现记录，只验证新提交的修复结果。
 
-Agent 证据从 Codex 命令执行或 Claude Code Bash 工具结果采集，把提交、验证委派 ID、逐步观察、工具记录 ID 和输出 SHA-256 保存在任务详情。摘要、编译结果、普通文件内容或模型自述无法单独通过操作验证。Agent 需要能够启动并操作指定环境，缺少环境或逐步记录时任务会补验或阻塞，不会直接交付。
+Agent 证据从 Codex 命令执行或 Claude Code Bash 工具结果采集，把提交、验证委派 ID、逐步观察、工具记录 ID 和输出 SHA-256 保存在任务详情。摘要、编译结果、普通文件内容或模型自述无法单独通过操作验证。Git worktree 不包含 `node_modules`，验证 Agent 会先按锁文件安装隔离依赖（npm 项目使用 `npm ci --ignore-scripts --no-audit --no-fund`），再加载 DSH Desktop 或启动应用；不会复用其他工作树的依赖。Agent 需要能够启动并操作指定环境，缺少环境或逐步记录时任务会补验或阻塞，不会直接交付。
 
 仍可配置由维护者控制的 `kind: operation` 检查。验证程序放在任务工作树之外，使用绝对路径。程序从 `FEISHU_OPERATION_VALIDATION` 读取验证场景，`FEISHU_VALIDATED_COMMIT` 提供待验证提交。实际操作并断言结果后，程序在 stdout 输出 `FEISHU_OPERATION_EVIDENCE ` 加 JSON。字段包括 `operation`、`expected`、顺序一致的 `steps`（每步有 `action`、`observed`）、整体 `observed` 和 `passed: true`。缺陷任务还需要 `baseline: { reproduced: true, observed: "实际复现结果" }`。
 

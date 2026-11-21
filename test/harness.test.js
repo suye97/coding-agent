@@ -159,6 +159,14 @@ for (const kind of ['claude', 'codex']) {
 test('operation evidence comes from completed tool output on the verification turn', async () => {
   const { ctx, input } = fixture()
   const { stdout, terminal, started } = liveProvider(ctx, ['node', 'codex.js', 'app-server', '--stdio'])
+  const startActivation = ctx.subagents.startActivation
+  ctx.subagents.startActivation = options => {
+    const [{ text }] = options.prompt
+    assert.match(text, /Git worktree 不包含 node_modules/)
+    assert.match(text, /npm ci --ignore-scripts --no-audit --no-fund/)
+    assert.match(text, /缺少依赖属于待准备的环境条件/)
+    return startActivation(options)
+  }
   const runner = createHarness(ctx, { developmentProvider: 'codex', providerPoliciesVerified: true })
   const pending = runner.verifyOperation({ ...input, commit: 'commit', validation })
   await started
