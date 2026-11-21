@@ -6,17 +6,25 @@ import { registerClaudeSettings } from './src/claude-settings.js'
 import { registerProjectSettings } from './src/project-settings.js'
 import { dirname, isAbsolute, join } from 'node:path'
 import { createFeishuChannel } from './src/feishu.js'
+import { createAttachmentStore } from './src/attachments.js'
+import { receiveTaskMessage } from './src/attachment-intake.js'
 import { createHarness } from './src/harness.js'
 import { createProjects, createRepository } from './src/repository.js'
 import { openStore } from './src/store.js'
 import { createWorkflow } from './src/workflow.js'
+import { operatorIds } from './src/operators.js'
 
 export const inject = ['agents', 'subagents', 'credentials']
 export const Config = Schema.object({
   enabled: Schema.boolean().default(false).description('启动飞书长连接和任务处理'),
   appId: Schema.string().default('').description('飞书自建应用 App ID'),
   secretKey: Schema.string().default('FEISHU_DEV_APP_SECRET').description('DSH 凭据引用名称'),
-  userId: Schema.string().default('').description('唯一操作人的应用内 open_id'),
+  userId: Schema.string().default('').description('操作人 open_id，用英文逗号分隔；留空允许任何用户发起关键词任务'),
+  tapdCardSource: Schema.object({
+    chatId: Schema.string().default('').description('接收 TAPD 卡片的飞书群 chat_id'),
+    senderId: Schema.string().default('').description('发送 TAPD 卡片的机器人事件发送方 ID'),
+    operatorId: Schema.string().default('').description('该来源创建任务的操作人 open_id'),
+  }).description('指定 TAPD 群卡片来源'),
   dataDirectory: Schema.string().default('').description('SQLite 和任务工作树的绝对存放路径'),
   designProvider: Schema.string().default('').description('限制为只读的 Claude Code provider'),
   developmentProvider: Schema.string().default('').description('写入范围限制在任务工作树的 Claude Code provider'),
@@ -30,6 +38,7 @@ export const Config = Schema.object({
     remote: Schema.string().default('origin'),
     checks: Schema.array(Schema.object({
       label: Schema.string().required(),
+      kind: Schema.union(['command', 'operation']).default('command'),
       command: Schema.string().required(),
       args: Schema.array(Schema.string()).default([]),
       timeoutMs: Schema.natural().min(1).max(600000).default(120000),
@@ -38,16 +47,18 @@ export const Config = Schema.object({
 })
 
 export function apply(ctx, config) {
+  let lastGroupCard
   ctx.inject(['connection'], connectionCtx => registerDispatch(connectionCtx, config))
-  ctx.inject(['connection', 'configEditor'], settingsCtx => registerChannelSettings(settingsCtx, config, ctx.fiber.entry))
+  ctx.inject(['connection', 'configEditor'], settingsCtx => registerChannelSettings(settingsCtx, config, ctx.fiber.entry, () => lastGroupCard))
   ctx.inject(['connection', 'configEditor'], settingsCtx => registerClaudeSettings(settingsCtx, config, ctx.fiber.entry))
   ctx.inject(['connection', 'configEditor'], settingsCtx => registerProjectSettings(settingsCtx, config, ctx.fiber.entry))
   if (!config.enabled) return
-  if (!config.appId || !config.userId.startsWith('ou_') || !/^[A-Z_][A-Z0-9_]*$/i.test(config.secretKey) || !isAbsolute(config.dataDirectory) || !config.projects.length) {
-    throw new Error('请配置飞书 App ID、操作人 open_id、凭据引用、数据目录和项目。')
+  if (!config.appId || !operatorIds(config.userId) || !/^[A-Z_][A-Z0-9_]*$/i.test(config.secretKey) || !isAbsolute(config.dataDirectory) || !config.projects.length) {
+    throw new Error('请核对飞书 App ID、操作人 open_id 格式、凭据引用、数据目录和项目。')
   }
   const projects = createProjects(config.projects)
-  const runner = createHarness(ctx, config)
+  const attachmentStore = createAttachmentStore({ directory: config.dataDirectory, appId: config.appId })
+  const runner = createHarness(ctx, config, { loadAttachment: attachmentStore.load })
   const repository = createRepository(join(config.dataDirectory, 'worktrees'))
   const report = () => console.warn('[feishu-development-agent] 飞书连接或任务处理失败，待发送卡片将重试。')
 
@@ -74,8 +85,12 @@ export function apply(ctx, config) {
       store = openStore(database)
       workflow = createWorkflow({ store, projects, userId: config.userId, runner, repository, onError: report })
       channel = await createFeishuChannel({
-        appId: config.appId, appSecret: secret.value, onError: report,
-        onMessage: message => stopping ? '' : workflow.onMessage(message),
+        appId: config.appId, appSecret: secret.value, tapdCardSource: config.tapdCardSource, onError: report,
+        onGroupCard: ({ messageId, ...source }) => {
+          if (messageId === lastGroupCard?.messageId && source.status === 'received') return
+          lastGroupCard = { messageId, ...source }
+        },
+        onMessage: message => stopping ? '' : receiveTaskMessage(workflow, channel, attachmentStore, message),
         onAction: action => stopping ? '插件正在停止。' : workflow.onAction(action),
       })
       if (stopping) return

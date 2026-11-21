@@ -1,4 +1,35 @@
+# IDE 和操作系统文件
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# 依赖、构建和测试产物
 node_modules/
 .npm-cache/
+.cache/
+/dist/
+/coverage/
+/playwright-report/
+/test-results/
 *.tgz
+
+# 日志和本地运行状态
+log/
+logs/
+*.log
 *.sqlite*
+*.db
+*.db-shm
+*.db-wal
+/.dsh/
+/attachments/
+/worktrees/
+
+# 本地环境与凭据文件
+.env
+.env.*
+!.env.example
+!.env.sample

@@ -7,10 +7,13 @@ window.__ModuleLoader__.load({
     const packageName = '@local/dsh-feishu-development-agent'
     const locales = {
       zh: {
-        dispatchTab: '调度', channelTab: '渠道配置', appId: 'App ID', userId: '操作人 Open ID', dataDirectory: '数据目录',
+        dispatchTab: '调度', channelTab: '渠道配置', appId: 'App ID', userId: '操作人 Open ID（选填，多个用英文逗号分隔）', dataDirectory: '数据目录',
         appSecret: 'App Secret', secretSet: '已保存。留空保留现有凭据。', secretUnset: '尚未保存。',
         channelEnabled: '开启飞书长连接', channelSave: '保存配置', channelSaving: '正在保存…', channelSaved: '配置已保存。',
         channelLoad: '正在读取飞书配置…', channelLoadError: '无法读取飞书配置。', channelSaveError: '无法保存飞书配置，请检查应用字段和现有项目配置。',
+        tapdSource: 'TAPD 群卡片来源', tapdChatId: '群 ID', tapdSenderId: '机器人发送方 ID', tapdOperatorId: '任务操作人 Open ID',
+        tapd_received: '已收到飞书事件，等待卡片处理', tapd_source: '群 ID 或机器人来源与配置不符', tapd_content: '来源匹配，尚未提取到标题和详细描述', tapd_parsed: '正文已解析并提交给调度',
+        tapdRead: '读取最近收到的群卡片', tapdUse: '填入这张卡片的来源', tapdMissing: '本次连接尚未收到可识别来源的机器人群卡片。',
         channelHint: '使用飞书企业自建应用。开启长连接前，请先在「项目仓库」添加仓库。',
         claudeTab: '模型配置', baseUrl: 'Base URL', apiKey: 'API Key', model: '模型名称',
         claudeSave: '保存模型配置', claudeHint: '只需填写 Anthropic 兼容接口信息，其余 Provider 和委派配置自动沿用。',
@@ -38,13 +41,16 @@ window.__ModuleLoader__.load({
         delivery_transport: '连接失败或响应不可识别', delivery_local: '本地处理失败', delivery_missing_message_id: '飞书未返回消息 ID',
         stale: '刷新失败，以下为上次读取的记录。', comments: '方案修改意见',
         confirm: '待补充需求', design_queued: '等待设计', designing: '设计中', approval: '历史待审批', held: '历史暂缓', queued: '等待开发',
-        developing: '开发中', verify_queued: '等待验证', verifying: '验证中', blocked: '阻塞', review: '待验收', accepted: '已验收', cancelled: '已取消',
+        developing: '开发中', verify_queued: '等待验证', verifying: '验证中', manual_review: '待人工审核', attachments: '截图与原型', reviewProposal: '替代方案', reviewImpact: '与原需求的差异', reviewDeletions: '删除文件', reviewWarnings: '脚本告警', operationEvidence: '操作验证记录', blocked: '阻塞', review: '待验收', accepted: '已验收', cancelled: '已取消',
       },
       en: {
-        dispatchTab: 'Dispatch', channelTab: 'Channels', appId: 'App ID', userId: 'Operator Open ID', dataDirectory: 'Data directory',
+        dispatchTab: 'Dispatch', channelTab: 'Channels', appId: 'App ID', userId: 'Operator Open IDs (optional, comma-separated)', dataDirectory: 'Data directory',
         appSecret: 'App Secret', secretSet: 'Saved. Leave blank to keep the existing credential.', secretUnset: 'No credential saved.',
         channelEnabled: 'Enable Feishu persistent connection', channelSave: 'Save settings', channelSaving: 'Saving…', channelSaved: 'Settings saved.',
         channelLoad: 'Loading Feishu settings…', channelLoadError: 'Could not load Feishu settings.', channelSaveError: 'Could not save Feishu settings. Check the application fields and project configuration.',
+        tapdSource: 'TAPD group card source', tapdChatId: 'Group ID', tapdSenderId: 'Sending bot ID', tapdOperatorId: 'Task operator Open ID',
+        tapd_received: 'Feishu event received, awaiting card processing', tapd_source: 'Group or sender differs from the configured source', tapd_content: 'Source matched, awaiting title and description', tapd_parsed: 'Description parsed and submitted to dispatch',
+        tapdRead: 'Read latest received group card', tapdUse: 'Use this card source', tapdMissing: 'No group card with a bot sender has been received on this connection.',
         channelHint: 'Use a custom Feishu app. Add a repository under Project repositories before enabling the connection.',
         claudeTab: 'Model', baseUrl: 'Base URL', apiKey: 'API Key', model: 'Model name',
         claudeSave: 'Save model settings', claudeHint: 'Only the Anthropic-compatible connection is required. Provider and delegation settings are preserved automatically.',
@@ -72,7 +78,7 @@ window.__ModuleLoader__.load({
         delivery_transport: 'Connection failed or response was unrecognized', delivery_local: 'Local processing failed', delivery_missing_message_id: 'Feishu did not return a message ID',
         stale: 'Refresh failed. Showing previously loaded records.', comments: 'Plan feedback',
         confirm: 'Needs information', design_queued: 'Design queued', designing: 'Designing', approval: 'Legacy approval', held: 'Legacy hold', queued: 'Development queued',
-        developing: 'Developing', verify_queued: 'Verification queued', verifying: 'Verifying', blocked: 'Blocked', review: 'Awaiting acceptance', accepted: 'Accepted', cancelled: 'Cancelled',
+        developing: 'Developing', verify_queued: 'Verification queued', verifying: 'Verifying', manual_review: 'Awaiting manual review', attachments: 'Screenshots and prototypes', reviewProposal: 'Alternative', reviewImpact: 'Difference from the request', reviewDeletions: 'Deleted files', reviewWarnings: 'Script warnings', operationEvidence: 'Operation verification', blocked: 'Blocked', review: 'Awaiting acceptance', accepted: 'Accepted', cancelled: 'Cancelled',
       },
     }
 
@@ -81,7 +87,7 @@ window.__ModuleLoader__.load({
       .feishu-development-panel *, .feishu-development-panel *::before, .feishu-development-panel *::after { box-sizing: border-box; }
       .feishu-development-content { max-width: 1440px; height: 100%; min-height: 0; margin: 0 auto; display: flex; flex-direction: column; container-type: inline-size; }
       .feishu-development-body { min-height: 0; flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; padding: 6px 2px 28px; }
-      .feishu-development-body.is-dispatch { overflow: hidden; padding-bottom: 20px; }
+      .feishu-development-body[data-tab='dispatch'] { overflow: hidden; padding-bottom: 20px; }
       .feishu-development-panel h1 { margin: 0; font-size: clamp(24px, 2.5vw, 32px); line-height: 1.2; font-weight: 700; letter-spacing: -.025em; }
       .feishu-development-panel h2 { margin: 0; font-size: 18px; line-height: 1.35; font-weight: 650; }
       .feishu-development-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
@@ -104,6 +110,7 @@ window.__ModuleLoader__.load({
       .feishu-development-button:hover { background: color-mix(in srgb, var(--fd-surface) 90%, var(--fd-blue)) !important; }
       .feishu-development-button-primary:hover { background: color-mix(in srgb, var(--fd-blue) 86%, #000) !important; }
       .feishu-development-panel :is(button, input, select, summary):focus-visible { outline: 2px solid var(--fd-blue); outline-offset: 2px; }
+      .feishu-development-output:focus-visible { outline: 2px solid var(--fd-blue); outline-offset: -2px; }
       .feishu-development-tabpanel { height: 100%; min-height: 0; }
       .feishu-development-dispatch { display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 20px; height: 100%; min-height: 0; animation: feishu-development-enter .2s ease-out; }
       .feishu-development-tasks, .feishu-development-output { min-width: 0; min-height: 0; padding: 22px; background: var(--fd-surface); border: 1px solid var(--fd-border); border-radius: 14px; box-shadow: 0 5px 18px color-mix(in srgb, var(--dsw-alias-label-primary, #233047) 4%, transparent); }
@@ -130,6 +137,8 @@ window.__ModuleLoader__.load({
       .feishu-development-row[data-stage='designing'], .feishu-development-row[data-stage='developing'], .feishu-development-row[data-stage='verifying'], .feishu-development-output[data-stage='designing'], .feishu-development-output[data-stage='developing'], .feishu-development-output[data-stage='verifying'], .feishu-development-timeline > li[data-stage='designing'], .feishu-development-timeline > li[data-stage='developing'], .feishu-development-timeline > li[data-stage='verifying'] { --stage-color: var(--fd-blue); }
       .feishu-development-row[data-stage='blocked'], .feishu-development-output[data-stage='blocked'], .feishu-development-timeline > li[data-stage='blocked'] { --stage-color: var(--dsw-alias-state-error, #b5474e); }
       .feishu-development-row[data-stage='accepted'], .feishu-development-output[data-stage='accepted'], .feishu-development-timeline > li[data-stage='accepted'] { --stage-color: var(--dsw-alias-state-success, #14805c); }
+      .feishu-development-panel [data-stage='review'] { --stage-color: var(--dsw-alias-state-success, #14805c); }
+      .feishu-development-panel :is([data-stage='confirm'], [data-stage='approval'], [data-stage='held'], [data-stage='manual_review']) { --stage-color: var(--dsw-alias-state-warning, var(--dsw-alias-label-primary)); }
       .feishu-development-status { display: inline-flex; align-items: center; width: fit-content; padding: 3px 8px; border-radius: 6px; color: var(--stage-color, var(--dsw-alias-label-secondary)); background: color-mix(in srgb, var(--fd-surface) 88%, var(--stage-color, var(--dsw-alias-label-secondary))); font-size: 12px; font-weight: 700; }
       .feishu-development-detail-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
       .feishu-development-field { display: grid; gap: 3px; margin: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -154,7 +163,7 @@ window.__ModuleLoader__.load({
       .feishu-development-form label.feishu-development-toggle { display: flex; align-items: center; }
       .feishu-development-form button:disabled { opacity: .6; cursor: default; }
       @container (max-width: 680px) {
-        .feishu-development-body.is-dispatch { overflow-y: auto; }
+        .feishu-development-body[data-tab='dispatch'] { overflow-y: auto; }
         .feishu-development-tabpanel, .feishu-development-dispatch { height: auto; }
         .feishu-development-dispatch { grid-template-columns: minmax(0, 1fr); gap: 16px; }
         .feishu-development-task-list { max-height: 35vh; flex: none; }
@@ -228,10 +237,11 @@ window.__ModuleLoader__.load({
         const plan = changed('planVersion') || changed('plan') ? entry.plan : null
         const development = newAttempt || changed('development') ? entry.development : null
         const result = changed('result') ? entry.result : null
+        const proposal = changed('manualReview') ? entry.manualReview?.proposal : null
         const failure = entry.stage === 'blocked' && (previous?.stage !== 'blocked' || changed('error')) ? entry.error : null
         const comment = changed('comments') && entry.comments?.at(-1)
         const rework = changed('rework') && entry.rework
-        if (entry.stage === previous?.stage && !call && !plan && !development && !result && !failure && !comment && !rework) return null
+        if (entry.stage === previous?.stage && !call && !plan && !development && !result && !proposal && !failure && !comment && !rework) return null
 
         return h('li', { key: entry.revision, 'data-stage': entry.stage },
           h('strong', { className: 'feishu-development-status' }, t(entry.stage)), ' ', h('time', { className: 'feishu-development-meta' }, time(entry.recordedAt)),
@@ -247,6 +257,9 @@ window.__ModuleLoader__.load({
             h('strong', null, t('designOutput')), field('summary', plan.summary), field('scope', plan.scope),
             field('risks', plan.risks), field('verification', plan.verification)),
           development && h('div', { className: 'feishu-development-response' }, field('developmentOutput', development.summary)),
+           proposal && [field('reviewProposal', proposal.summary), field('reviewImpact', proposal.impact)],
+           result?.changeReview && [field('reviewDeletions', result.changeReview.unapprovedDeletions?.join('\n')), field('reviewWarnings', result.changeReview.warnings?.map(({ path, reason }) => `${path} · ${reason}`).join('\n'))],
+           result?.operationEvidence && field('operationEvidence', [result.operationEvidence.operation, result.operationEvidence.childId, result.operationEvidence.baseline, ...result.operationEvidence.steps.map(({ action, observed, toolId, outputSha256 }) => [ `${action} → ${observed}`, toolId, outputSha256 ].filter(Boolean).join('\n')), result.operationEvidence.expected, result.operationEvidence.observed].filter(Boolean).join('\n')),
           result && [field('branch', result.branch), field('commit', result.commit), field('push', result.remote && `${result.remote}/${result.branch}`), field('changes', result.changes), field('checks', result.checks?.map(check => `${t(check.passed ? 'passed' : 'failed')} · ${check.label}${check.output ? `\n${check.output}` : ''}`).join('\n'))])
       }))
     }
@@ -280,7 +293,7 @@ window.__ModuleLoader__.load({
       const history = detail?.history ?? []
       const current = history.at(-1)
       const activeAttemptId = ['designing', 'developing'].includes(current?.stage) ? current.attempt?.id : undefined
-      return h('section', { id: `${id}-output`, className: 'feishu-development-output', 'data-stage': row.stage, 'aria-labelledby': `${id}-output-title` },
+      return h('section', { id: `${id}-output`, className: 'feishu-development-output', tabIndex: 0, 'data-stage': row.stage, 'aria-labelledby': `${id}-output-title` },
         h('div', { className: 'feishu-development-output-heading' },
           h('h2', { id: `${id}-output-title` }, row.summary || t('detail')),
           h('div', { className: 'feishu-development-detail-meta' },
@@ -294,6 +307,7 @@ window.__ModuleLoader__.load({
         detail && h('div', null,
           detail.requirement?.body && h('details', null, h('summary', null, t('requirement')),
             h('div', { className: 'feishu-development-field' }, detail.requirement.body)),
+           current?.attachments?.length > 0 && h(Field, { label: t('attachments'), value: current.attachments.map(image => `${image.mimeType} · ${image.width} × ${image.height} · ${image.id.slice(0, 12)}`).join('\n') }),
           delivery?.failures > 0 && h('p', { role: 'status' }, `${t('deliveryIssue')} · ${t('deliveryFailures')} ${delivery.failures} · ${t('retryAt')} ${time(delivery.retryAt)}`),
           lastError && h('section', null,
             h('h3', null, t('lastDeliveryError')),
@@ -326,8 +340,8 @@ window.__ModuleLoader__.load({
         setBusy(true)
         setMessage(null)
         try {
-          const { appId, userId, dataDirectory, enabled, appSecret } = draft
-          const saved = await saveChannel({ appId, userId, dataDirectory, enabled, ...(appSecret ? { appSecret } : {}) })
+          const { appId, userId, dataDirectory, enabled, appSecret, tapdCardSource } = draft
+          const saved = await saveChannel({ appId, userId, dataDirectory, enabled, tapdCardSource, ...(appSecret ? { appSecret } : {}) })
           setDraft({ ...saved, appSecret: '' })
           setMessage({ key: 'channelSaved' })
         } catch (error) {
@@ -344,6 +358,22 @@ window.__ModuleLoader__.load({
       const field = (key, options = {}) => h('label', { key }, t(key), h('input', {
         value: draft[key] ?? '', disabled: busy, onChange: event => change(key, event.target.value), ...options,
       }))
+      const source = draft?.tapdCardSource ?? { chatId: '', senderId: '', operatorId: '' }
+      const changeSource = (key, value) => change('tapdCardSource', { ...source, [key]: value })
+      // 从服务端刷新最近收到的群卡片，并保留尚未保存的表单内容。
+      async function readGroupCard() {
+        setBusy(true)
+        setMessage(null)
+        try {
+          const { lastGroupCard } = await loadChannel()
+          setDraft(previous => ({ ...previous, lastGroupCard }))
+          if (!lastGroupCard) setMessage({ key: 'tapdMissing' })
+        } catch (error) {
+          setMessage({ error: true, key: 'channelLoadError', reason: error.safeReason })
+        } finally {
+          setBusy(false)
+        }
+      }
       return h('section', { hidden, className: 'feishu-development-settings', role: 'tabpanel', id: `${id}-channel-panel`, 'aria-labelledby': `${id}-channel-tab` },
         h('h2', null, t('source')),
         h('p', { className: 'feishu-development-meta' }, t('channelHint')),
@@ -352,8 +382,21 @@ window.__ModuleLoader__.load({
           field('appId', { spellCheck: false, autoComplete: 'off', placeholder: 'cli_…' }),
           field('appSecret', { type: 'password', autoComplete: 'new-password', 'aria-describedby': `${id}-secret-status` }),
           h('span', { id: `${id}-secret-status`, className: 'feishu-development-meta' }, t(draft.secretConfigured ? 'secretSet' : 'secretUnset')),
-          field('userId', { spellCheck: false, autoComplete: 'off', placeholder: 'ou_…' }),
+          field('userId', { spellCheck: false, autoComplete: 'off', placeholder: 'ou_…,ou_…' }),
           field('dataDirectory', { spellCheck: false, autoComplete: 'off' }),
+          h('fieldset', null, h('legend', null, t('tapdSource')),
+            ...[['chatId', 'tapdChatId'], ['senderId', 'tapdSenderId'], ['operatorId', 'tapdOperatorId']].map(([key, label]) =>
+              h('label', { key }, t(label), h('input', { value: source[key], disabled: busy, spellCheck: false,
+                onChange: event => changeSource(key, event.target.value) }))),
+            h('button', { type: 'button', disabled: busy, className: 'feishu-development-button', onClick: readGroupCard }, t('tapdRead')),
+            draft.lastGroupCard && h('div', null,
+              h('p', { className: 'feishu-development-meta' }, [draft.lastGroupCard.chatId, draft.lastGroupCard.senderId, time(draft.lastGroupCard.receivedAt)].join(' · ')),
+              draft.lastGroupCard.status && h('p', { role: 'status' }, t(`tapd_${draft.lastGroupCard.status}`)),
+              h('button', { type: 'button', disabled: busy, className: 'feishu-development-button', onClick: () => {
+                const operators = draft.userId.split(',').map(value => value.trim()).filter(Boolean)
+                change('tapdCardSource', { chatId: draft.lastGroupCard.chatId, senderId: draft.lastGroupCard.senderId,
+                  operatorId: source.operatorId || (operators.length === 1 ? operators[0] : '') })
+              } }, t('tapdUse')))),
           h('label', { className: 'feishu-development-toggle' }, h('input', {
             type: 'checkbox', checked: Boolean(draft.enabled), disabled: busy, onChange: event => change('enabled', event.target.checked),
           }), t('channelEnabled')),
@@ -592,7 +635,7 @@ window.__ModuleLoader__.load({
               type: 'button', role: 'tab', 'aria-selected': tab === key, 'aria-controls': `${id}-${key}-panel`, tabIndex: tab === key ? 0 : -1,
               onClick: () => changeTab(key),
             }, t(`${key}Tab`)))),
-          h('div', { ref: body, className: `feishu-development-body${tab === 'dispatch' ? ' is-dispatch' : ''}` },
+          h('div', { ref: body, className: 'feishu-development-body', 'data-tab': tab },
             h(ChannelSettings, { t, loadChannel, saveChannel, hidden: tab !== 'channel' }),
             h(ClaudeSettings, { t, loadClaude, saveClaude, hidden: tab !== 'claude' }),
             h(ProjectSettings, { t, projectApi, hidden: tab !== 'projects' }),
