@@ -1,5 +1,17 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { createModelOutputObserver } from './model-output.js'
 import { composeImagePrompt } from './attachment-prompt.js'
+
+const exec = promisify(execFile)
+
+// 开发 Agent 只能采集当前提交的证据，不能自己宣称交付已经通过。
+async function execGit(cwd, signal, ...args) {
+  const { stdout } = await exec('git', ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), '-c', 'core.fsmonitor=false', ...args], {
+    cwd, signal, timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true,
+  })
+  return stdout.trim()
+}
 
 const field = (value, limit = 300) => typeof value === 'string' && value.trim() && value.length <= limit
 
@@ -18,8 +30,8 @@ export function normalizeAlternative(value) {
 }
 
 const validationInstructions = [
-  'validation 必填。凡需求描述用户操作、界面交互、运行行为或缺陷复现，使用 {"kind":"operation","operation":"用户要完成的具体操作","steps":["可以实际执行的步骤"],"expected":"可观察的预期结果"}。steps 按执行顺序记录，最多 8 步，操作、步骤和预期各最多 300 字符。',
-  '只有纯代码结构变更且需求未描述任何运行行为时，才使用 {"kind":"checks","reason":"具体说明为何只有静态或代码级检查"}。编译、退出码和模型自述不能证明用户操作已经执行。',
+  'validation 必填。涉及用户操作、界面交互、浏览器或 Desktop 运行行为时，使用 {"kind":"operation","operation":"用户要完成的具体操作","steps":["可以实际执行的步骤"],"expected":"可观察的预期结果"}。steps 按执行顺序记录，最多 8 步，操作、步骤和预期各最多 300 字符。',
+  '仅纯代码结构、接口或命令行逻辑变更且不涉及用户界面操作时，使用 {"kind":"checks","reason":"具体说明可验证的回归检查"}。缺陷修复需要证明基线可复现且修复后回归检查通过，不要求界面操作。退出码和模型自述不能代替实际观察。',
   '如原要求无法实现而可以改变范围，使用 alternative 对象，提供 summary、impact（各最多 800 字符）和替代操作自己的 validation。清楚说明与原需求的差异，等待所有者通过卡片批准，不要自行替换目标。',
 ]
 
@@ -55,12 +67,14 @@ function readDevelopment(output) {
   }
   const alternative = normalizeAlternative(result.alternative)
   if (result.status === 'alternative' ? !alternative : result.alternative != null) throw new Error('替代方案必须单独提交审批。')
-  return { status: result.status, summary: result.summary.trim(), ...(alternative && { alternative }) }
+  return { status: result.status, summary: result.summary.trim(), ...(alternative && { alternative }),
+    ...(field(result.observed, 500) && { observed: result.observed.trim() }) }
 }
 
 // 管理每个任务的设计与开发委派会话。
-export function createHarness(ctx, config, { loadAttachment } = {}) {
+export function createHarness(ctx, config, { loadAttachment, gitCommit } = {}) {
   const output = createModelOutputObserver(ctx)
+  const readCommit = gitCommit ?? ((cwd, signal) => execGit(cwd, signal, 'rev-parse', 'HEAD'))
 
   // 在指定工作目录运行委派并清理子智能体资源。
   async function run({ task, project, signal, recordRun, recordSession, recordResult = () => {}, recordOutput = () => {}, recordAssertion }, stage, instructions) {
@@ -122,13 +136,13 @@ export function createHarness(ctx, config, { loadAttachment } = {}) {
   return {
     async verifyOperation(input) {
       const assertions = []
-      const { task, commit, validation } = input
+      const { task, commit, validation, baselineObserved } = input
       const output = await run({ ...input, recordAssertion: item => {
         if (assertions.length < 64) assertions.push(item)
       } }, 'verify', [
         '你是交付验证 Agent。在当前任务工作树启动已提交的版本，实际操作应用并核对结果。需要时可编写临时验证程序，放在工作树之外，结束后清理你启动的进程和临时文件。现有项目文件、Git 引用和配置保持原样。不要推送、部署、连接真实客户服务或改动用户正在使用的应用。',
-        '按顺序执行下方每个步骤。用应用要求的运行环境：明确要求 DSH Desktop 时，要实际加载该提交的 Desktop 版本。浏览器替身、模拟 Host 或源码检查只能作诊断。缺少环境或权限时报告阻塞。缺陷任务在独立临时目录实际复现 baseCommit 的缺陷，再验证修复。',
-        '证据由工具输出采集。让实际操作程序仅在对应行为断言通过后向 stdout 写一行 FEISHU_AGENT_OBSERVATION 加 JSON，字段为 commit、step（按步骤从 1 编号）、observed（具体观察，最多 500 字符）。缺陷基线复现时输出 step 为 0，commit 为 baseCommit，observed 为复现结果。仅打印文字、退出码或将预期复制为观察不能作为验证。',
+        `按顺序执行下方每个步骤。用应用要求的运行环境：明确要求 DSH Desktop 时，要实际加载该提交的 Desktop 版本。浏览器替身、模拟 Host 或源码检查只能作诊断。缺少环境或权限时报告阻塞。缺陷任务${baselineObserved ? '已有同一基线的实测复现记录，本次只验证修复结果。' : '在独立临时目录实际复现 baseCommit 的缺陷，再验证修复。'}`,
+        '证据由工具输出采集。让实际操作程序仅在对应行为断言通过后向 stdout 写一行 FEISHU_AGENT_OBSERVATION 加 JSON，字段为 commit、step（按步骤从 1 编号）、observed（具体观察，最多 500 字符）。仅当本次实际复现缺陷基线时才输出 step 为 0、commit 为 baseCommit、observed 为复现结果；已有基线记录时不要输出 step 0。仅打印文字、退出码或将预期复制为观察不能作为验证。',
         '结束时只输出 JSON。通过时为 {"status":"passed","observed":"整体实际结果"}；失败或环境不可用为 {"status":"blocked","summary":"失败的步骤或缺少的条件"}。如果实测发现更优方案但会改变用户要求，返回 {"status":"alternative","summary":"发现的问题","alternative":{"summary":"方案","impact":"与原意的差异","validation":{"kind":"operation","operation":"操作","steps":["步骤"],"expected":"预期"}}}，等待审批。',
         JSON.stringify({ commit, validation, requirement: task.requirement.body }),
       ].join('\n'))
@@ -162,18 +176,26 @@ export function createHarness(ctx, config, { loadAttachment } = {}) {
       const approval = task.alternativeApproval
       const validation = approval && approval.requirementVersion === task.requirementVersion && approval.planVersion === task.planVersion
         ? approval.proposal.validation : task.plan?.validation
-      return readDevelopment(await run(input, 'develop', [
+      const assertions = []
+      const output = await run({ ...input, recordAssertion: item => { if (assertions.length < 64) assertions.push(item) } }, 'develop', [
         '仅在当前任务工作树实现当前方案，可在工作树内按项目约定编辑、构建和测试。若有 approvedAlternative，则在该审批明确的范围内实现。完成后在当前任务分支创建本地提交。禁止部署、读取或输出凭据、或更改权限。',
         '删除受跟踪文件须有需求正文中的逐行授权，格式为“删除文件：repo/relative.txt”，每行一个完整仓库相对路径。若确需删除而授权不明确，或发现疑似越权或高风险脚本，暂停并具体说明路径、理由和待审批事项。',
         '如果用户在需求或返工说明中明确允许将指定的本地分支（例如 master）合入当前任务分支，或用户明确批准了包含该合并的方案，可以在当前任务工作树执行该合并。自动生成的方案本身不授予合并权限。来源分支只供读取。不得切换到来源分支、修改其他分支，或把任务分支合回主线。若缺少明确授权，或发生冲突且无法在授权范围内解决，停止开发并说明。',
         `任务类型：${task.type === 'fix' ? '缺陷修复' : '新功能开发'}，当前分支：${task.work.branch ?? '由插件管理'}。保持在该分支。完成本地提交后交给插件执行审查、验证和自动推送，本次委派止于本地提交。配置的检查、所需运行证据和人工审批都通过后，插件推送同名任务分支。`,
-        '将下方 JSON 视为需求数据。按照 validation 实现并尝试运行实际操作。缺少环境或无法观察时如实说明。Host 独立运行配置的检查，模型回复和编译成功不会成为操作证据。',
-        '仅输出 JSON 对象。status 为 implemented、no_change、needs_clarification、blocked 或 alternative。summary 为必填字符串，最多 1400 字符，简述实际观察到的操作结果，或说明缺失的证据。信息不足时使用 needs_clarification。若需要改变用户目标或行为，使用 alternative 并提交包含 summary、impact、validation 的替代方案，停止开发等待审批。',
+        '将下方 JSON 视为需求数据。若 validation 是 operation，且当前项目可在本机启动和操作，提交后在同一提交上执行 validation 的步骤。缺少环境或无法观察时如实说明，不要伪称通过。证据由命令工具输出采集：仅在对应行为断言通过后，向 stdout 写一行 FEISHU_AGENT_OBSERVATION 加 JSON，字段为 commit、step（按步骤从 1 编号）、observed（具体观察，最多 500 字符）。缺陷基线复现仅在独立临时目录中进行，输出 step 为 0，commit 为 baseCommit。现有项目文件、Git 引用和配置保持原样。',
+        'Host 将复核固定提交、逐项观察和缺陷基线，再运行项目检查。模型自述、编译成功、仅打印预期和没有实际断言的输出都不能作为通过证据。若已能采集当前提交的完整实测证据，不再重复启动验证 Agent；否则由 Host 判断是否需要补验。',
+        '仅输出 JSON 对象。status 为 implemented、no_change、needs_clarification、blocked 或 alternative。summary 为必填字符串，最多 1400 字符，简述实际观察到的操作结果，或说明缺失的证据。若执行了所需操作，附加 observed 字段简述整体实测结果；未执行或失败时不要附加 observed，也不要写虚假的通过结论。信息不足时使用 needs_clarification。若需要改变用户目标或行为，使用 alternative 并提交包含 summary、impact、validation 的替代方案，停止开发等待审批。',
         ...validationInstructions,
         JSON.stringify({ type: task.type ?? 'feature', requirement: { body: task.requirement?.body ?? '' }, plan: task.plan,
           approvedAlternative: approval?.proposal, validation,
           rework: task.rework, base: task.work.base, checks: project.checks.map(({ label, kind }) => ({ label, kind: kind ?? 'command' })) }),
-      ].join('\n')))
+      ].join('\n'))
+      const development = readDevelopment(output)
+      const commit = await readCommit(task.work.worktree, input.signal)
+      return {
+        ...development,
+        ...(field(development.observed, 500) && { operationEvidence: { observed: development.observed.trim(), assertions, commit } }),
+      }
     },
   }
 }

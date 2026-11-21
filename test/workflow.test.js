@@ -27,6 +27,7 @@ async function fixture(t, operators = userId) {
   let sequence = 0
   let shouldPass = false
   let pushError = false
+  let commit = 'abcdef'
   let developmentStatus = 'implemented'
   let makeReports = scenario => scenario ? [report(observedReport(scenario))] : []
   let changeReview
@@ -60,7 +61,7 @@ async function fixture(t, operators = userId) {
     },
     async verify(options) {
       verifications.push(options)
-      const result = { branch: 'feishu/example', commit: changeReview?.commit ?? 'abcdef', changes: 'orders.js', checks: [{ label: '单测', passed: shouldPass }] }
+      const result = { branch: 'feishu/example', commit: changeReview?.commit ?? commit, changes: 'orders.js', checks: [{ label: '单测', passed: shouldPass }] }
       if (changeReview) result.changeReview = { ...changeReview, approvalRequired: options.task.changeReviewApproval?.commit !== changeReview.commit }
       if (shouldPass && !result.changeReview?.approvalRequired) result.operationReports = makeReports(options.operationValidation)
       return result
@@ -89,6 +90,7 @@ async function fixture(t, operators = userId) {
     store: () => store,
     passChecks: () => { shouldPass = true },
     failPushOnce: () => { pushError = true },
+    setCommit: value => { commit = value },
     setDevelopmentStatus: value => { developmentStatus = value },
     setOperationReports: factory => { makeReports = factory },
     setChangeReview: value => { changeReview = value },
@@ -241,6 +243,7 @@ test('passing compile output and agent assertions cannot satisfy UI operation va
   assert.equal(app.action('重试'), '已记录。')
   await app.work()
   await app.publish()
+  assert.equal(app.card().title, '开发交付')
   assert.match(app.card().text, /实测操作 更新订单状态/)
   assert.match(app.card().text, /点击保存后收到订单页面状态/)
   assert.deepEqual(app.pushes, ['abcdef'])
@@ -262,6 +265,111 @@ test('a UI request cannot be classified as static checks, while a structural cha
   assert.deepEqual(app.pushes, ['abcdef'])
 })
 
+test('development operation evidence on the same commit avoids a duplicate verification agent', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.setOperationReports(() => [])
+  app.runner.develop = async ({ recordRun, recordResult }) => {
+    recordRun('develop-child', 'workspace')
+    recordResult({ stopReason: 'completed' })
+    return { status: 'implemented', summary: '完成', operationEvidence: {
+      observed: '筛选生效', commit: 'abcdef',
+      assertions: validation.steps.map((_, index) => ({ id: `tool-${index}`, sha256: 'b'.repeat(64),
+        line: JSON.stringify({ commit: 'abcdef', step: index + 1, observed: `实测 ${index + 1}` }) })),
+    } }
+  }
+  app.runner.verifyOperation = async () => assert.fail('不应重复启动验证 Agent')
+  app.failPushOnce()
+  app.send('开发需求｜订单\n点击保存按钮后显示已更新')
+  await app.work()
+  await app.work()
+  assert.equal(app.store().inStage('blocked').length, 1)
+  await app.publish()
+  assert.equal(app.action('重试'), '已记录。')
+  await app.work()
+  const [task] = app.store().inStage('review')
+  assert.equal(task.result.operationEvidence.childId, 'develop-child')
+  assert.equal(task.result.operationEvidence.commit, 'abcdef')
+  assert.deepEqual(app.pushes, ['abcdef'])
+})
+
+test('stale or incomplete development evidence falls back to independent verification', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.setOperationReports(() => [])
+  app.runner.develop = async ({ recordRun }) => {
+    recordRun('develop-child', 'workspace')
+    return { status: 'implemented', summary: '完成', operationEvidence: {
+      observed: '自述通过', commit: 'old-commit', assertions: [],
+    } }
+  }
+  let delegated = 0
+  app.runner.verifyOperation = async ({ commit, recordRun }) => {
+    delegated++
+    recordRun('verify-child', 'workspace')
+    return { observed: '补验通过', assertions: validation.steps.map((_, index) => ({ id: `tool-${index}`, sha256: 'c'.repeat(64),
+      line: JSON.stringify({ commit, step: index + 1, observed: `实测 ${index + 1}` }) })) }
+  }
+  app.send('开发需求｜订单\n点击保存按钮后显示已更新')
+  await app.work()
+  await app.work()
+  assert.equal(delegated, 1)
+  assert.equal(app.store().inStage('review')[0].result.operationEvidence.childId, 'verify-child')
+})
+
+test('a fix rework reuses its recorded baseline and only verifies the new result', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.setOperationReports(() => [])
+  app.runner.develop = async ({ task, recordRun, recordResult }) => {
+    const childId = task.rework ? 'rework-child' : 'develop-child'
+    recordRun(childId, 'workspace')
+    recordResult({ stopReason: 'completed' })
+    return { status: 'implemented', summary: '完成', ...(task.rework && { operationEvidence: {
+      observed: '修复后显示新值', commit: 'fedcba',
+      assertions: validation.steps.map((_, index) => ({ id: `rework-tool-${index}`, sha256: 'd'.repeat(64),
+        line: JSON.stringify({ commit: 'fedcba', step: index + 1, observed: `修复实测 ${index + 1}` }) })),
+    } }) }
+  }
+  let verifications = 0
+  app.runner.verifyOperation = async ({ commit, validation: scenario, baselineObserved, recordRun }) => {
+    verifications++
+    assert.equal(baselineObserved, false)
+    recordRun('verify-child', 'workspace')
+    return { observed: '修复后显示新值', assertions: [
+      { id: 'baseline-tool', sha256: 'c'.repeat(64), line: JSON.stringify({ commit: scenario.baseCommit, step: 0, observed: '基线保存后仍是旧值' }) },
+      ...scenario.steps.map((_, index) => ({ id: `verify-tool-${index}`, sha256: 'c'.repeat(64),
+        line: JSON.stringify({ commit, step: index + 1, observed: `实测 ${index + 1}` }) })),
+    ] }
+  }
+  app.send('修复缺陷｜订单\n保存后仍显示旧值')
+  await app.work()
+  await app.work()
+  assert.equal(app.store().inStage('review')[0].result.operationEvidence.baseline, '基线保存后仍是旧值')
+  app.setCommit('fedcba')
+  await app.publish()
+  assert.equal(app.action('要求返工', { text: '补充边界情况' }), '已记录。')
+  await app.work()
+  const [task] = app.store().inStage('review')
+  assert.equal(verifications, 1)
+  assert.equal(task.result.operationEvidence.childId, 'rework-child')
+  assert.equal(task.result.operationEvidence.baseline, '基线保存后仍是旧值')
+  assert.deepEqual(app.pushes, ['abcdef', 'fedcba'])
+})
+test('a backend fix uses regression checks rather than forcing a GUI verification agent', async t => {
+  const app = await fixture(t)
+  app.project.checks = [{ label: '接口回归检查' }]
+  app.runner.design = async () => ({ ...plan, validation: { kind: 'checks', reason: '用接口回归测试复现并验证修复' } })
+  app.runner.verifyOperation = async () => assert.fail('不需要 GUI 验证')
+  app.passChecks()
+  app.send('修复缺陷｜订单\n修复批量更新接口丢失参数')
+  await app.work()
+  await app.work()
+  assert.equal(app.verifications.at(-1).operationValidation, undefined)
+  assert.equal(app.store().inStage('review').length, 1)
+  assert.deepEqual(app.pushes, ['abcdef'])
+})
+
 test('a fix requires an actual baseline reproduction and a post-change observation', async t => {
   const app = await fixture(t)
   app.setOperationReports(scenario => [report({ ...observedReport(scenario), baseline: undefined })])
@@ -277,6 +385,7 @@ test('a fix requires an actual baseline reproduction and a post-change observati
   await app.work()
   await app.publish()
   assert.equal(app.verifications.at(-1).operationValidation.baseCommit, 'base')
+  assert.equal(app.card().title, '开发交付')
   assert.match(app.card().text, /基线复现 保存后仍显示旧值/)
   assert.deepEqual(app.pushes, ['abcdef'])
 })

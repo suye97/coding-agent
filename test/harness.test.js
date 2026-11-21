@@ -3,6 +3,8 @@ import { PassThrough } from 'node:stream'
 import test from 'node:test'
 import { createHarness } from '../src/harness.js'
 
+const gitCommit = async () => 'committed-head'
+
 const validation = { kind: 'operation', operation: '筛选订单', steps: ['点击筛选'], expected: '只显示已完成订单' }
 const plan = { summary: '实现状态筛选', scope: '订单', risks: '旧数据', verification: '运行检查', validation }
 
@@ -49,7 +51,7 @@ test('Harness adapter gates unverified policy, creates and resumes a task parent
   const { ctx, input, seen, agent } = fixture([plan, development])
   await assert.rejects(createHarness(ctx, {}).design(input), /尚未完成/)
   assert.deepEqual(seen, [])
-  const runner = createHarness(ctx, { designProvider: 'read-only', developmentProvider: 'workspace', providerPoliciesVerified: true })
+  const runner = createHarness(ctx, { designProvider: 'read-only', developmentProvider: 'workspace', providerPoliciesVerified: true }, { gitCommit })
   assert.deepEqual(await runner.design(input), plan)
   const startActivation = ctx.subagents.startActivation
   ctx.subagents.startActivation = options => {
@@ -60,7 +62,7 @@ test('Harness adapter gates unverified policy, creates and resumes a task parent
     assert.match(text, /完成本地提交后交给插件执行审查、验证和自动推送，本次委派止于本地提交/)
     assert.match(text, /配置的检查、所需运行证据和人工审批都通过后，插件推送同名任务分支/)
     assert.match(text, /删除文件：repo\/relative\.txt/)
-    assert.match(text, /编译、退出码和模型自述不能证明用户操作已经执行/)
+    assert.match(text, /缺陷修复需要证明基线可复现且修复后回归检查通过/)
     return startActivation(options)
   }
   assert.deepEqual(await runner.develop(input), development)
@@ -74,7 +76,7 @@ test('Harness adapter gates unverified policy, creates and resumes a task parent
 
 test('Harness rejects an invalid development result and still releases resources', async () => {
   const { ctx, input, seen } = fixture([{ status: 'unknown', summary: '无效状态' }])
-  const runner = createHarness(ctx, { developmentProvider: 'workspace', providerPoliciesVerified: true })
+  const runner = createHarness(ctx, { developmentProvider: 'workspace', providerPoliciesVerified: true }, { gitCommit })
   await assert.rejects(runner.develop(input), /开发结果需要/)
   assert.deepEqual(seen.slice(-3), ['close child', 'drain', 'close parent'])
 })
@@ -83,7 +85,7 @@ test('Harness requires a structured validation plan and rejects a hidden scope c
   const alternative = { summary: '仅展示列表', impact: '取消原来的筛选要求', validation }
   const { ctx, input } = fixture([{ ...plan, validation: undefined }, { status: 'implemented', summary: '已提交', alternative },
     { status: 'alternative', summary: '需要审批', alternative }])
-  const runner = createHarness(ctx, { designProvider: 'read-only', developmentProvider: 'workspace', providerPoliciesVerified: true })
+  const runner = createHarness(ctx, { designProvider: 'read-only', developmentProvider: 'workspace', providerPoliciesVerified: true }, { gitCommit })
   await assert.rejects(runner.design(input), /缺少有效的操作验证计划/)
   await assert.rejects(runner.develop(input), /必须单独提交审批/)
   assert.deepEqual(await runner.develop(input), { status: 'alternative', summary: '需要审批', alternative })
@@ -177,6 +179,43 @@ test('operation evidence comes from completed tool output on the verification tu
   assert.match(result.assertions[0].sha256, /^[a-f0-9]{64}$/)
 })
 
+test('development captures current-commit operation evidence without creating another session', async () => {
+  const { ctx, input } = fixture([{ status: 'implemented', summary: '完成筛选', observed: '仅显示已完成订单' }])
+  const { stdout, terminal, started } = liveProvider(ctx, ['node', 'codex.js', 'app-server', '--stdio'])
+  let finished = false
+  const runner = createHarness(ctx, { developmentProvider: 'codex', providerPoliciesVerified: true }, {
+    gitCommit: async () => { assert.equal(finished, true); return 'committed-head' },
+  })
+  const pending = runner.develop(input)
+  await started
+  const packet = (method, params) => write(stdout, { method, params: { threadId: 'thread', turnId: 'turn', ...params } })
+  packet('turn/started', { turn: { id: 'turn' } })
+  packet('item/completed', { item: { type: 'commandExecution', id: 'tool', status: 'completed', exitCode: 0,
+    aggregatedOutput: `FEISHU_AGENT_OBSERVATION ${JSON.stringify({ commit: 'committed-head', step: 1, observed: '列表筛选已生效' })}` } })
+  finished = true
+  terminal.resolve({ stopReason: 'completed', output: [{ type: 'text', text: JSON.stringify({ status: 'implemented', summary: '完成筛选', observed: '仅显示已完成订单' }) }] })
+  const result = await pending
+  assert.equal(result.operationEvidence.commit, 'committed-head')
+  assert.equal(result.operationEvidence.assertions.length, 1)
+  assert.equal(result.operationEvidence.observed, '仅显示已完成订单')
+})
+
+test('Claude development evidence accepts command results but not file contents', async () => {
+  const { ctx, input } = fixture()
+  const { stdout, terminal, started } = liveProvider(ctx, ['claude', '--output-format', 'stream-json', '--input-format', 'stream-json'])
+  const runner = createHarness(ctx, { developmentProvider: 'claude', providerPoliciesVerified: true }, { gitCommit })
+  const pending = runner.develop(input)
+  await started
+  const line = `FEISHU_AGENT_OBSERVATION ${JSON.stringify({ commit: 'committed-head', step: 1, observed: '实际筛选结果' })}`
+  const tools = blocks => write(stdout, { type: 'assistant', parent_tool_use_id: null, message: { role: 'assistant', content: blocks } })
+  const results = blocks => write(stdout, { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: blocks } })
+  tools([{ type: 'tool_use', id: 'read', name: 'Read' }, { type: 'tool_use', id: 'shell', name: 'Bash' }])
+  results([{ type: 'tool_result', tool_use_id: 'read', content: line }, { type: 'tool_result', tool_use_id: 'shell', content: line }])
+  terminal.resolve({ stopReason: 'completed', output: [{ type: 'text', text: JSON.stringify({ status: 'implemented', summary: '完成', observed: '筛选生效' }) }] })
+  const result = await pending
+  assert.equal(result.operationEvidence.assertions.length, 1)
+  assert.equal(result.operationEvidence.assertions[0].id, 'shell')
+})
 test('cancellation detaches the observer and keeps the terminal cancellation behavior', async () => {
   const { ctx, input } = fixture()
   const { stdout, terminal, started } = liveProvider(ctx, ['claude', '--output-format', 'stream-json', '--input-format', 'stream-json'])

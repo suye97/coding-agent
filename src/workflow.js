@@ -10,8 +10,9 @@ const imageStages = ['confirm', 'design_queued', 'designing', 'blocked', 'review
 const acceptsImage = task => imageStages.includes(task.stage) ||
   (task.stage === 'manual_review' && task.manualReview?.kind === 'alternative')
 
+// 只让明确的用户界面、交互和运行行为要求进入操作验证；修复不等于需要 GUI。
 function requiresOperation(task) {
-  return task.type === 'fix' || [task.requirement.body, ...(task.comments ?? []), task.rework, task.validationRework].some(text => actionable.test(text ?? ''))
+  return [task.requirement.body, ...(task.comments ?? []), task.rework, task.validationRework].some(text => actionable.test(text ?? ''))
 }
 
 function validationFor(task) {
@@ -49,9 +50,9 @@ function observedOperation(validation, reports, task) {
   return evidence
 }
 
-function agentOperationEvidence(validation, report, commit, attempt) {
+function agentOperationEvidence(validation, report, commit, attempt, baseline) {
   const { observed, assertions } = report
-  const firstStep = validation.type === 'fix' ? 0 : 1
+  const firstStep = validation.type === 'fix' && !baseline ? 0 : 1
   const observations = []
   if (!observation(observed) || !attempt?.childId || !Array.isArray(assertions)) {
     throw new Error('验证 Agent 缺少实际操作工具记录。')
@@ -68,13 +69,14 @@ function agentOperationEvidence(validation, report, commit, attempt) {
   if (observations.length !== validation.steps.length + (firstStep === 0 ? 1 : 0)) {
     throw new Error('验证 Agent 缺少与待验提交匹配的逐步工具记录，或缺少基线复现。')
   }
-  const baseline = firstStep === 0 ? observations.shift() : undefined
-  if (baseline?.observed === observed.trim()) throw new Error('缺陷复现与修复结果相同。')
+  const baselineObservation = firstStep === 0 ? observations.shift() : baseline
+  if (baselineObservation?.observed === observed.trim()) throw new Error('缺陷复现与修复结果相同。')
   return {
     kind: 'operation', source: 'agent', commit, childId: attempt.childId, provider: attempt.provider,
     operation: validation.operation, expected: validation.expected, observed: observed.trim(),
     steps: validation.steps.map((action, index) => ({ action, ...observations[index] })),
-    ...(baseline && { baseline: baseline.observed, baselineTool: baseline }),
+    ...(baselineObservation && { baseline: baselineObservation.observed,
+      ...(baselineObservation.toolId && { baselineTool: baselineObservation }) }),
   }
 }
 
@@ -516,7 +518,15 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
             typeof development.summary !== 'string' || !development.summary.trim() || development.summary.length > 1400) {
           throw new Error('开发委派返回了无效结果。')
         }
-        task.attempt.development = development
+        task.attempt.development = { status: development.status, summary: development.summary, ...(development.alternative && { alternative: development.alternative }) }
+        if (development.operationEvidence) {
+          task.operationEvidence = {
+            ...development.operationEvidence,
+            operation: validation.operation,
+            expected: validation.expected,
+            source: 'development',
+          }
+        }
         if (development.status === 'needs_clarification') throw new Error(`开发需要补充：${development.summary}`)
         if (development.status === 'blocked') throw new Error(`开发受阻：${development.summary}`)
         if (development.status === 'alternative') {
@@ -532,6 +542,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
         persist('verifying')
       }
       const operationValidation = validation.kind === 'operation' ? { ...validation, type: task.type, baseCommit: task.work.base } : undefined
+      const previousEvidence = task.result?.operationEvidence
       const { operationReports, ...result } = await repository.verify({ task, project, signal, ...task.verification, operationValidation })
       task.result = result
       if (result.changeReview?.approvalRequired) {
@@ -541,27 +552,44 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
       }
       if (!result.checks?.length || !result.checks.every(check => check.passed)) throw new Error('验证未通过，请查看检查结果。')
       if (operationValidation) {
-        if (operationReports?.length || !runner.verifyOperation) {
+        if (operationReports?.length) {
           result.operationEvidence = { ...observedOperation(operationValidation, operationReports, task), commit: result.commit }
-        } else {
-          if (task.attempt.kind !== 'verifying') {
-            flushOutput()
-            task.attempt = { id: randomUUID(), kind: 'verifying', startedAt: Date.now(), status: 'running' }
-            persist('verifying')
-            attemptId = task.attempt.id
-            output = ''
-            truncated = false
-          }
-          const evidence = await runner.verifyOperation({ task, project, signal, recordRun, recordSession, recordResult, recordOutput,
-            validation: operationValidation, commit: result.commit })
-          if (evidence.alternative) {
-            task.manualReview = { kind: 'alternative', proposal: evidence.alternative, sourceStage: task.stage }
-            persist('manual_review')
-            return
-          }
-          result.operationEvidence = agentOperationEvidence(operationValidation, evidence, result.commit, task.attempt)
+          task.operationEvidence = result.operationEvidence
           persist('verifying')
+        } else {
+          // 同一提交和同一验证方案的开发实测可以直接进入交付证据。
+          const candidate = task.operationEvidence?.commit === result.commit &&
+            task.operationEvidence.operation === validation.operation && task.operationEvidence.expected === validation.expected
+            ? task.operationEvidence : undefined
+          const baseline = ['agent', 'development'].includes(previousEvidence?.source) ? previousEvidence.baselineTool : undefined
+          let developmentEvidence
+          if (candidate?.source === 'development') {
+            try { developmentEvidence = agentOperationEvidence(operationValidation, candidate, result.commit, task.attempt, baseline) } catch { /* 缺少证据时补验。 */ }
+          }
+          if (candidate && (candidate.source !== 'development' || developmentEvidence)) {
+            task.operationEvidence = developmentEvidence ?? candidate
+          } else {
+            if (task.attempt.kind !== 'verifying') {
+              flushOutput()
+              task.attempt = { id: randomUUID(), kind: 'verifying', startedAt: Date.now(), status: 'running' }
+              persist('verifying')
+              attemptId = task.attempt.id
+              output = ''
+              truncated = false
+            }
+            const evidence = await runner.verifyOperation({ task, project, signal, recordRun, recordSession, recordResult, recordOutput,
+              validation: operationValidation, commit: result.commit, baselineObserved: Boolean(baseline) })
+            if (evidence.alternative) {
+              task.manualReview = { kind: 'alternative', proposal: evidence.alternative, sourceStage: task.stage }
+              persist('manual_review')
+              return
+            }
+            task.operationEvidence = agentOperationEvidence(operationValidation, evidence, result.commit, task.attempt, baseline)
+            persist('verifying')
+          }
         }
+        result.operationEvidence = task.operationEvidence
+        persist('verifying')
       }
       const pushed = await repository.push({ task, project, signal, result })
       task.work.pushedCommit = pushed.commit
