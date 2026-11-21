@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
         loading: '正在读取调度记录…', empty: '暂无调度记录', send: '在飞书发送「开发需求｜项目名」或「修复缺陷｜项目名」，下一行填写需求。',
         unconfigured: '配置飞书应用和数据目录后，调度记录会显示在这里。', error: '读取调度记录失败。',
         refresh: '刷新', settings: '插件详情', detail: '开发过程', noHistory: '暂无阶段记录。',
-        requirement: '需求正文', acceptance: '验收条件', summary: '实现方案', scope: '影响范围', risks: '风险与待澄清事项',
+        requirement: '需求正文', summary: '实现方案', scope: '影响范围', risks: '风险与待澄清事项',
         invocation: '调用详情', startedAt: '开始时间', heartbeat: '插件心跳', waitingResponse: '正在等待模型返回…',
         designOutput: '设计返回', developmentOutput: '开发返回', seconds: '秒',
         modelOutput: '模型输出', modelOutputTruncated: '较早的输出已省略。',
@@ -60,7 +60,7 @@ window.__ModuleLoader__.load({
         loading: 'Loading dispatch records…', empty: 'No dispatch records', send: 'Send “开发需求｜Project name” or “修复缺陷｜Project name” to the Feishu bot, followed by the request on the next line.',
         unconfigured: 'Configure the Feishu application and data directory to see dispatch records here.', error: 'Could not read dispatch records.',
         refresh: 'Refresh', settings: 'Plugin details', detail: 'Development history', noHistory: 'No recorded stages.',
-        requirement: 'Request', acceptance: 'Acceptance criteria', summary: 'Implementation plan', scope: 'Scope', risks: 'Risks and open questions',
+        requirement: 'Request', summary: 'Implementation plan', scope: 'Scope', risks: 'Risks and open questions',
         invocation: 'Invocation details', startedAt: 'Started at', heartbeat: 'Plugin heartbeat', waitingResponse: 'Waiting for the model to respond…',
         designOutput: 'Design response', developmentOutput: 'Development response', seconds: 's',
         modelOutput: 'Model output', modelOutputTruncated: 'Earlier output was trimmed.',
@@ -77,21 +77,23 @@ window.__ModuleLoader__.load({
     }
 
     const css = `
-      .feishu-development-panel { box-sizing: border-box; height: 100%; overflow: auto; padding: 28px clamp(16px, 5vw, 48px); color: var(--dsw-alias-label-primary); }
-      .feishu-development-content { max-width: 1440px; margin: 0 auto; container-type: inline-size; }
+      .feishu-development-panel { box-sizing: border-box; height: 100%; min-height: 0; overflow: hidden; padding: 24px clamp(16px, 5vw, 48px) 0; color: var(--dsw-alias-label-primary); }
+      .feishu-development-content { max-width: 1440px; height: 100%; min-height: 0; margin: 0 auto; display: flex; flex-direction: column; container-type: inline-size; }
+      .feishu-development-body { min-height: 0; flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; padding: 4px 2px 28px; }
       .feishu-development-panel h1 { margin: 0; font-size: 24px; font-weight: 600; }
       .feishu-development-panel h2 { margin: 0; font-size: 17px; font-weight: 600; }
       .feishu-development-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
       .feishu-development-list { list-style: none; margin: 12px 0; padding: 0; }
-      .feishu-development-row { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; padding: 12px 10px; border: 0; border-bottom: 1px solid var(--dsw-alias-border-l2); }
-      .feishu-development-row[aria-current='true'] { background: var(--dsw-alias-interactive-bg-hover); }
+      .feishu-development-row { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; padding: 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; margin: 0 0 8px; transition: background-color .18s ease, border-color .18s ease, transform .18s ease; }
+      .feishu-development-row:hover { transform: translateX(2px); }
+      .feishu-development-row[aria-current='true'] { background: var(--dsw-alias-interactive-bg-hover); border-color: var(--dsw-alias-state-business-primary); box-shadow: inset 3px 0 var(--dsw-alias-state-business-primary); }
       .feishu-development-row-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
       .feishu-development-meta { color: var(--dsw-alias-label-secondary); font-size: 12px; }
       .feishu-development-panel button { font: inherit; color: inherit; background: transparent; cursor: pointer; }
-      .feishu-development-button { padding: 6px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; }
+      .feishu-development-button { padding: 6px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; transition: background-color .18s ease, border-color .18s ease; }
       .feishu-development-panel button:hover { background: var(--dsw-alias-interactive-bg-hover); }
       .feishu-development-panel button:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 2px; }
-      .feishu-development-dispatch { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: 28px; align-items: start; }
+      .feishu-development-dispatch { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: 28px; align-items: start; animation: feishu-development-enter .2s ease-out; }
       .feishu-development-tasks { min-width: 0; position: sticky; top: 0; }
       .feishu-development-output { min-width: 0; padding-left: 28px; border-left: 1px solid var(--dsw-alias-border-l2); }
       .feishu-development-output-heading { margin-bottom: 16px; }
@@ -102,18 +104,29 @@ window.__ModuleLoader__.load({
       .feishu-development-task-list .feishu-development-row:focus-visible { outline-offset: -2px; }
       .feishu-development-output details > summary { cursor: pointer; }
       .feishu-development-output details { margin: 12px 0; }
+      .feishu-development-output details[open] { animation: feishu-development-enter .18s ease-out; }
       .feishu-development-response { margin-top: 10px; padding: 2px 14px; border-left: 2px solid var(--dsw-alias-state-business-primary); max-width: 72ch; }
       .feishu-development-stream { max-height: 22rem; overflow: auto; padding: 8px 4px; }
       .feishu-development-stream pre { margin: 0; font: inherit; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
       .feishu-development-timeline { list-style: none; margin: 20px 0 0; padding: 0 0 0 15px; border-left: 1px solid var(--dsw-alias-border-l2); }
-      .feishu-development-timeline > li { position: relative; padding-bottom: 18px; overflow-wrap: anywhere; }
-      .feishu-development-timeline > li::before { content: ''; position: absolute; left: -20px; top: .4em; width: 9px; height: 9px; border-radius: 50%; background: var(--dsw-alias-label-secondary); }
+      .feishu-development-timeline > li { position: relative; padding: 0 0 18px 8px; overflow-wrap: anywhere; }
+      .feishu-development-timeline > li::before { content: ''; position: absolute; left: -20px; top: .4em; width: 9px; height: 9px; border-radius: 50%; background: var(--stage-color, var(--dsw-alias-label-secondary)); }
+      .feishu-development-timeline > li:last-child { border-radius: 8px; background: var(--dsw-alias-interactive-bg-hover); }
+      .feishu-development-timeline > li:last-child::before { box-shadow: 0 0 0 4px var(--dsw-alias-interactive-bg-hover); }
+      .feishu-development-row[data-stage], .feishu-development-timeline > li[data-stage] { --stage-color: var(--dsw-alias-label-secondary); }
+      .feishu-development-row[data-stage='designing'], .feishu-development-row[data-stage='developing'], .feishu-development-row[data-stage='verifying'], .feishu-development-timeline > li[data-stage='designing'], .feishu-development-timeline > li[data-stage='developing'], .feishu-development-timeline > li[data-stage='verifying'] { --stage-color: var(--dsw-alias-state-business-primary); }
+      .feishu-development-row[data-stage='blocked'], .feishu-development-timeline > li[data-stage='blocked'] { --stage-color: var(--dsw-alias-state-error, #b5474e); }
+      .feishu-development-row[data-stage='accepted'], .feishu-development-timeline > li[data-stage='accepted'] { --stage-color: var(--dsw-alias-state-success, #14805c); }
+      .feishu-development-status { color: var(--stage-color, var(--dsw-alias-label-secondary)); font-weight: 600; }
       .feishu-development-field { display: grid; gap: 3px; margin: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
       .feishu-development-field strong { font-size: 12px; }
       .feishu-development-panel p { line-height: 1.6; }
-      .feishu-development-tabs { display: flex; gap: 20px; border-bottom: 1px solid var(--dsw-alias-border-l2); margin: 16px 0 20px; }
-      .feishu-development-tabs button { padding: 8px 2px; border: 0; border-bottom: 2px solid transparent; }
-      .feishu-development-tabs button[aria-selected='true'] { border-bottom-color: var(--dsw-alias-state-business-primary); font-weight: 600; }
+      .feishu-development-tabs { display: flex; gap: 8px; flex: none; overflow-x: auto; border-bottom: 1px solid var(--dsw-alias-border-l2); margin: 12px 0 14px; }
+      .feishu-development-tabs button { flex: none; padding: 10px 14px; border: 0; border-bottom: 3px solid transparent; border-radius: 8px 8px 0 0; color: var(--dsw-alias-label-secondary); transition: color .18s ease, background-color .18s ease, border-color .18s ease; }
+      .feishu-development-tabs button[aria-selected='true'] { color: var(--dsw-alias-state-business-primary); background: var(--dsw-alias-interactive-bg-hover); border-bottom-color: var(--dsw-alias-state-business-primary); font-weight: 600; }
+      .feishu-development-tabpanel { animation: feishu-development-enter .2s ease-out; }
+      @keyframes feishu-development-enter { from { opacity: .65; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+      @media (prefers-reduced-motion: reduce) { .feishu-development-panel *, .feishu-development-panel *::before, .feishu-development-panel *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
       .feishu-development-form { max-width: 540px; display: grid; gap: 16px; margin: 16px 0; }
       .feishu-development-form label { display: grid; gap: 6px; }
       .feishu-development-form select, .feishu-development-form input:not([type='checkbox']) { font: inherit; color: inherit; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l3); border-radius: 8px; padding: 8px 10px; min-width: 0; }
@@ -190,8 +203,8 @@ window.__ModuleLoader__.load({
         const rework = changed('rework') && entry.rework
         if (entry.stage === previous?.stage && !call && !plan && !development && !result && !failure && !comment && !rework) return null
 
-        return h('li', { key: entry.revision },
-          h('strong', null, t(entry.stage)), ' ', h('time', { className: 'feishu-development-meta' }, time(entry.recordedAt)),
+        return h('li', { key: entry.revision, 'data-stage': entry.stage },
+          h('strong', { className: 'feishu-development-status' }, t(entry.stage)), ' ', h('time', { className: 'feishu-development-meta' }, time(entry.recordedAt)),
           call && h('div', null,
             h('div', { className: 'feishu-development-meta' }, [call.provider, elapsed(call, t, running)].filter(Boolean).join(' · ')),
             running && call.childId && !output && h('p', { role: 'status' }, t('waitingResponse')),
@@ -248,8 +261,7 @@ window.__ModuleLoader__.load({
         }, t('refresh'))),
         detail && h('div', null,
           detail.requirement?.body && h('details', null, h('summary', null, t('requirement')),
-            h('div', { className: 'feishu-development-field' }, detail.requirement.body),
-            h(Field, { label: t('acceptance'), value: detail.requirement.acceptance })),
+            h('div', { className: 'feishu-development-field' }, detail.requirement.body)),
           delivery?.failures > 0 && h('p', { role: 'status' }, `${t('deliveryIssue')} · ${t('deliveryFailures')} ${delivery.failures} · ${t('retryAt')} ${time(delivery.retryAt)}`),
           lastError && h('section', null,
             h('h3', null, t('lastDeliveryError')),
@@ -470,6 +482,7 @@ window.__ModuleLoader__.load({
     function Panel({ t, loadList, loadDetail, openDetails, loadChannel, saveChannel, loadClaude, saveClaude, projectApi }) {
       const [tab, setTab] = useState('dispatch')
       const tabs = useRef({})
+      const body = useRef(null)
       const [state, setState] = useState({ loading: true, items: [] })
       const [selected, select] = useState(null)
       const [refresh, setRefresh] = useState(0)
@@ -493,13 +506,19 @@ window.__ModuleLoader__.load({
         const timer = setInterval(read, 5000)
         return () => { current = false; clearInterval(timer) }
       }, [loadList, refresh, tab])
+      // 切换标签时只重置内容滚动，标题与标签始终留在可见区域。
+      function changeTab(next) {
+        setTab(next)
+        if (body.current) body.current.scrollTop = 0
+      }
+      // 沿用标签键盘导航并保持焦点在新标签上。
       function handleTabKey(event) {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
         event.preventDefault()
         const index = panelTabs.indexOf(tab)
         const step = event.key === 'ArrowLeft' ? -1 : 1
         const next = event.key === 'Home' ? panelTabs[0] : event.key === 'End' ? panelTabs.at(-1) : panelTabs[(index + step + panelTabs.length) % panelTabs.length]
-        setTab(next)
+        changeTab(next)
         tabs.current[next]?.focus()
       }
       const row = state.items.find(item => item.id === selected) ??
@@ -516,11 +535,13 @@ window.__ModuleLoader__.load({
           h('li', { key: item.id }, h('button', {
             className: 'feishu-development-row', type: 'button',
             'aria-current': row?.id === item.id ? 'true' : undefined,
+            'data-stage': item.stage,
             'aria-controls': `${id}-output`,
             onClick: () => select(item.id),
           },
           h('span', { className: 'feishu-development-row-title' }, item.summary || item.id),
-          h('span', { className: 'feishu-development-meta' }, [item.project, t(item.stage)].filter(Boolean).join(' · ')),
+          h('span', { className: 'feishu-development-meta' }, item.project && `${item.project} · `,
+            h('span', { className: 'feishu-development-status' }, t(item.stage))),
           item.deliveryFailures > 0 && h('span', { className: 'feishu-development-meta' }, t('deliveryIssue')))))))
       return h('main', { className: 'feishu-development-panel', 'aria-labelledby': `${id}-title` },
         h('style', null, css),
@@ -530,16 +551,17 @@ window.__ModuleLoader__.load({
           h('div', { className: 'feishu-development-tabs', role: 'tablist', 'aria-label': t('title'), onKeyDown: handleTabKey },
             panelTabs.map(key => h('button', { key, id: `${id}-${key}-tab`, ref: element => { tabs.current[key] = element },
               type: 'button', role: 'tab', 'aria-selected': tab === key, 'aria-controls': `${id}-${key}-panel`, tabIndex: tab === key ? 0 : -1,
-              onClick: () => setTab(key),
+              onClick: () => changeTab(key),
             }, t(`${key}Tab`)))),
-          h(ChannelSettings, { t, loadChannel, saveChannel, hidden: tab !== 'channel' }),
-          h(ClaudeSettings, { t, loadClaude, saveClaude, hidden: tab !== 'claude' }),
-          h(ProjectSettings, { t, projectApi, hidden: tab !== 'projects' }),
-          h('section', {
-            hidden: tab !== 'dispatch', role: 'tabpanel', id: `${id}-dispatch-panel`, 'aria-labelledby': `${id}-dispatch-tab`,
-          },
-          h('div', { className: 'feishu-development-dispatch' }, taskList,
-            row && tab === 'dispatch' && h(TaskDetail, { key: row.id, row, t, loadDetail, listRefresh: refresh })))))
+          h('div', { ref: body, className: 'feishu-development-body' },
+            h(ChannelSettings, { t, loadChannel, saveChannel, hidden: tab !== 'channel' }),
+            h(ClaudeSettings, { t, loadClaude, saveClaude, hidden: tab !== 'claude' }),
+            h(ProjectSettings, { t, projectApi, hidden: tab !== 'projects' }),
+            h('section', {
+              className: 'feishu-development-tabpanel', hidden: tab !== 'dispatch', role: 'tabpanel', id: `${id}-dispatch-panel`, 'aria-labelledby': `${id}-dispatch-tab`,
+            },
+            h('div', { className: 'feishu-development-dispatch' }, taskList,
+              row && tab === 'dispatch' && h(TaskDetail, { key: row.id, row, t, loadDetail, listRefresh: refresh }))))))
     }
 
     return {

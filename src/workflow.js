@@ -15,15 +15,17 @@ const actions = {
 const inFlight = ['designing', 'developing', 'verifying']
 const textLimit = 12000
 
+// 提取需求正文，并跳过旧消息中独立的验收条件段落。
 function requirement(text) {
   const main = text.match(/(?:^|\n)\s*需求(?:正文)?\s*[:：]\s*/u)
   const acceptance = text.match(/(?:^|\n)\s*验收(?:条件|标准)?\s*[:：]\s*/u)
   const body = text.slice(main ? main.index + main[0].length : 0, acceptance?.index ?? text.length).trim()
-  return { body, acceptance: acceptance ? text.slice(acceptance.index + acceptance[0].length).trim() : '' }
+  return { body }
 }
 
-function hasRequirement(task) {
-  return Boolean(task.requirement.body.replace(/https?:\/\/[^\s]+/g, '').trim() && task.requirement.acceptance)
+// 项目可识别且去掉来源链接后仍有正文时进入设计。
+function readyForDesign(task) {
+  return Boolean(task.project && task.requirement?.body?.replace(/https?:\/\/[^\s]+/g, '').trim())
 }
 
 function availableActions(task) {
@@ -57,15 +59,15 @@ function render(task, project) {
   if (source) lines.push(`需求来源 ${source}`)
   if (stage === 'confirm') {
     if (project?.path) lines.push(`仓库 ${project.path}`)
-    lines.push(`需求 ${task.requirement.body || '待补充'}`, `验收条件 ${task.requirement.acceptance || '待补充'}`)
+    lines.push(`需求 ${task.requirement.body || '待补充'}`)
     if (!task.project) lines.push('补充时请填写“项目：项目名”。')
   }
   if (['design_queued', 'designing'].includes(stage)) {
-    lines.push(`需求 ${task.requirement.body}`, `验收条件 ${task.requirement.acceptance}`)
+    lines.push(`需求 ${task.requirement.body}`)
   }
   if (plan && ['queued', 'developing', 'verify_queued', 'verifying'].includes(stage)) {
     lines.push(`需求 v${task.requirementVersion} / 方案 v${task.planVersion}`, `方案\n${plan.summary}`,
-      `影响范围\n${plan.scope}`, `风险与待澄清事项\n${plan.risks}`, `验收条件\n${task.requirement.acceptance}`, `验证计划\n${plan.verification}`)
+      `影响范围\n${plan.scope}`, `风险与待澄清事项\n${plan.risks}`, `验证计划\n${plan.verification}`)
   }
   if (error && stage === 'blocked') lines.push(`失败阶段 ${titles[task.failedStage]}`, error)
   if (result && ['review', 'blocked', 'accepted'].includes(stage)) {
@@ -88,6 +90,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
     store.save(task)
   }
 
+  // 补充项目和正文后按统一条件重新决定是否入队。
   function supplement(task, text) {
     const project = text.match(/(?:^|\n)\s*项目\s*[:：]\s*([^\r\n]+)/u)
     const remainder = project ? text.replace(project[0], '').trim() : text
@@ -98,13 +101,12 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
       if (task.work && selected !== task.project) return '已创建工作树的任务不能切换项目。'
       task.project = selected
     }
-    if (!patch.body && !patch.acceptance && !project) return '请填写补充内容。'
-    if (patch.body) task.requirement.body = [task.requirement.body, patch.body].filter(Boolean).join('\n').slice(-textLimit)
-    if (patch.acceptance) task.requirement.acceptance = patch.acceptance
+    if (!patch.body && !project) return '请填写补充内容。'
+    task.requirement = { body: [task.requirement?.body, patch.body].filter(Boolean).join('\n').slice(-textLimit) }
     task.requirementVersion++
     task.plan = null
     task.approval = null
-    update(task, task.project && hasRequirement(task) ? 'design_queued' : 'confirm')
+    update(task, readyForDesign(task) ? 'design_queued' : 'confirm')
     return '已保存补充信息。'
   }
 
@@ -121,7 +123,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
           project: projects.resolve(start[2]?.trim()), requirement: requirement(text.slice(start[0].length)),
           requirementVersion: 1, planVersion: 0,
         }
-        update(task, task.project && hasRequirement(task) ? 'design_queued' : 'confirm')
+        update(task, readyForDesign(task) ? 'design_queued' : 'confirm')
         return ''
       }
       const target = text.match(/^#?([0-9a-f]{8})(?:\s+|[：:])/i)
@@ -188,7 +190,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
     store.transaction(() => {
       // 升级后不再等待人工确认或方案审批，旧的等待任务直接进入自动流程。
       for (const task of store.inStage('confirm', 'approval', 'held')) {
-        if (!task.project || !hasRequirement(task)) {
+        if (!readyForDesign(task)) {
           if (task.stage !== 'confirm') update(task, 'confirm')
         } else if (task.stage === 'confirm' || !task.plan) {
           update(task, 'design_queued')

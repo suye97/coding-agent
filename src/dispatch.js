@@ -27,10 +27,11 @@ function summary(task) {
   }
 }
 
+// 旧记录保留在数据库中，对调度详情只返回需求正文。
 function historyItem(task) {
   return {
     revision: task.revision, stage: task.stage, recordedAt: task.recordedAt ?? null,
-    requirementVersion: task.requirementVersion, requirement: task.requirement,
+    requirementVersion: task.requirementVersion, requirement: { body: task.requirement?.body ?? '' },
     comments: task.comments, planVersion: task.planVersion, plan: task.plan,
     approval: task.approval && { planVersion: task.approval.planVersion, requirementVersion: task.approval.requirementVersion, at: task.approval.at },
     attempt: publicAttempt(task.attempt),
