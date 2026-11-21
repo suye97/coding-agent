@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Feishu development agent",
+    "description": "Submit requests in a Feishu direct chat for automatic design and development, then review local branches and checks. Requires a Feishu app, an operator, a repository, and Claude Code delegation."
+  }
+}

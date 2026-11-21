@@ -1,0 +1,149 @@
+import assert from 'node:assert/strict'
+import { PassThrough } from 'node:stream'
+import test from 'node:test'
+import { createHarness } from '../src/harness.js'
+
+const plan = { summary: '实现状态筛选', scope: '订单', risks: '旧数据', verification: '运行检查' }
+
+function fixture(outputs = [plan]) {
+  const seen = []
+  let activation = 0
+  const agent = {}
+  const handle = { agent, async dispose() { seen.push('close parent') } }
+  const ctx = {
+    agents: {
+      get() { return undefined },
+      async create(options) { seen.push(['create', options.meta.cwd]); return handle },
+      async resume(options) { seen.push(['resume', options.resumeSessionId]); return handle },
+    },
+    subagents: {
+      async startActivation(options) {
+        seen.push([options.provider, options.cwd, options.delivery, options.parent])
+        return {
+          childId: 'child',
+          result: Promise.resolve({
+            stopReason: 'completed', output: [{ type: 'text', text: JSON.stringify(outputs[activation++] ?? plan) }],
+            usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 80 },
+          }),
+          async dispose() { seen.push('close child') },
+        }
+      },
+      async drainDescendants(agents) { assert.deepEqual(agents, [agent]); seen.push('drain') },
+    },
+  }
+  const task = { id: 'ABCDEF12', requirement: {}, requirementVersion: 1, work: { worktree: 'D:/isolated', base: 'base' }, plan }
+  const input = {
+    task,
+    project: { path: 'D:/repo', checks: [] },
+    signal: new AbortController().signal,
+    recordRun(id) { seen.push(id) },
+    recordSession() { task.sessionCreated = true },
+    recordResult(result) { seen.push(['result', result]) },
+  }
+  return { ctx, input, seen, agent }
+}
+
+test('Harness adapter gates unverified policy, creates and resumes a task parent, and disposes activations', async () => {
+  const development = { status: 'implemented', summary: '已创建本地提交' }
+  const { ctx, input, seen, agent } = fixture([plan, development])
+  await assert.rejects(createHarness(ctx, {}).design(input), /尚未完成/)
+  assert.deepEqual(seen, [])
+  const runner = createHarness(ctx, { designProvider: 'read-only', developmentProvider: 'workspace', providerPoliciesVerified: true })
+  assert.deepEqual(await runner.design(input), plan)
+  assert.deepEqual(await runner.develop(input), development)
+  assert.deepEqual(seen, [
+    ['create', 'D:/repo'], ['read-only', 'D:/repo', 'caller', agent], 'child',
+    ['result', { stopReason: 'completed' }], 'close child', 'drain', 'close parent',
+    ['resume', 'feishu-dev-abcdef12'], ['workspace', 'D:/isolated', 'caller', agent], 'child',
+    ['result', { stopReason: 'completed' }], 'close child', 'drain', 'close parent',
+  ])
+})
+
+test('Harness rejects an invalid development result and still releases resources', async () => {
+  const { ctx, input, seen } = fixture([{ status: 'unknown', summary: '无效状态' }])
+  const runner = createHarness(ctx, { developmentProvider: 'workspace', providerPoliciesVerified: true })
+  await assert.rejects(runner.develop(input), /开发结果需要/)
+  assert.deepEqual(seen.slice(-3), ['close child', 'drain', 'close parent'])
+})
+
+function liveProvider(ctx, argv) {
+  const stdout = new PassThrough()
+  const terminal = Promise.withResolvers()
+  const started = Promise.withResolvers()
+  const launches = []
+  const service = { spawn(spec) { launches.push(spec); return { stdout } } }
+  let readService
+  ctx.on = (event, listener) => {
+    assert.equal(event, 'internal/get')
+    readService = name => listener({}, name, null, () => service)
+  }
+  ctx.subagents.startActivation = async ({ cwd }) => {
+    await Promise.resolve()
+    readService('subprocess').spawn({ cwd, argv, stdio: { stdout: 'pipe' } })
+    started.resolve()
+    return { childId: 'live-child', result: terminal.promise, async dispose() {} }
+  }
+  return { stdout, terminal, started: started.promise, launches, readService: () => readService('subprocess'), service }
+}
+
+const write = (stdout, packet) => stdout.write(`${JSON.stringify(packet)}\n`)
+
+for (const kind of ['claude', 'codex']) {
+  test(`${kind} assistant text reaches the caller before the terminal result`, async () => {
+    const { ctx, input } = fixture()
+    const argv = kind === 'claude'
+      ? ['claude', '--output-format', 'stream-json', '--input-format', 'stream-json', '--permission-mode', 'plan', '--model', 'custom']
+      : ['node', 'codex.js', 'app-server', '--stdio']
+    const { stdout, terminal, started, launches, readService, service } = liveProvider(ctx, argv)
+    const text = []
+    input.recordOutput = value => text.push(value)
+    const runner = createHarness(ctx, { designProvider: 'user-provider', providerPoliciesVerified: true })
+    assert.equal(readService(), service)
+    const pending = runner.design(input)
+    await started
+    assert.deepEqual(launches[0].argv, kind === 'claude' ? [...argv, '--include-partial-messages'] : argv)
+    const codex = (method, params) => write(stdout, { method, params: { threadId: 'thread', turnId: 'turn', ...params } })
+    const claude = (event, parent = null) => write(stdout, { type: 'stream_event', parent_tool_use_id: parent, event })
+    if (kind === 'claude') {
+      claude({ type: 'message_start', message: { id: 'message' } })
+      claude({ type: 'content_block_start', content_block: { type: 'text', text: '' } })
+      claude({ type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'private' } })
+      claude({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'nested' } }, 'tool')
+      const encoded = Buffer.from(JSON.stringify({ type: 'stream_event', parent_tool_use_id: null,
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: '输出' } } }) + '\r\n')
+      const split = encoded.indexOf(Buffer.from('输出')) + 1
+      stdout.write(encoded.subarray(0, split))
+      stdout.write(encoded.subarray(split))
+      write(stdout, { type: 'assistant', parent_tool_use_id: null,
+        message: { id: 'message', role: 'assistant', content: [{ type: 'text', text: '输出' }] } })
+    } else {
+      codex('turn/started', { turn: { id: 'turn' } })
+      codex('item/reasoning/textDelta', { itemId: 'thought', delta: 'private' })
+      codex('item/agentMessage/delta', { threadId: 'child', itemId: 'nested', delta: 'nested' })
+      codex('item/agentMessage/delta', { itemId: 'message', delta: '输出' })
+      codex('item/completed', { item: { type: 'agentMessage', id: 'message', text: '输出' } })
+      codex('item/completed', { item: { type: 'commandExecution', id: 'tool', text: 'tool' } })
+    }
+    assert.equal(text.join(''), '输出')
+    terminal.resolve({ stopReason: 'completed', output: [{ type: 'text', text: JSON.stringify(plan) }] })
+    assert.deepEqual(await pending, plan)
+    assert.equal(stdout.listenerCount('data'), 0)
+  })
+}
+
+test('cancellation detaches the observer and keeps the terminal cancellation behavior', async () => {
+  const { ctx, input } = fixture()
+  const { stdout, terminal, started } = liveProvider(ctx, ['claude', '--output-format', 'stream-json', '--input-format', 'stream-json'])
+  const controller = new AbortController()
+  input.signal = controller.signal
+  input.recordOutput = () => assert.fail('unexpected output after cancellation')
+  const runner = createHarness(ctx, { designProvider: 'user-provider', providerPoliciesVerified: true })
+  const pending = runner.design(input)
+  await started
+  await new Promise(resolve => setImmediate(resolve))
+  controller.abort()
+  assert.equal(stdout.listenerCount('data'), 0)
+  write(stdout, { type: 'stream_event', parent_tool_use_id: null, event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'late' } } })
+  terminal.resolve({ stopReason: 'cancelled' })
+  await assert.rejects(pending, { name: 'AbortError' })
+})
