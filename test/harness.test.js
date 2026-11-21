@@ -50,6 +50,16 @@ test('Harness adapter gates unverified policy, creates and resumes a task parent
   assert.deepEqual(seen, [])
   const runner = createHarness(ctx, { designProvider: 'read-only', developmentProvider: 'workspace', providerPoliciesVerified: true })
   assert.deepEqual(await runner.design(input), plan)
+  const startActivation = ctx.subagents.startActivation
+  ctx.subagents.startActivation = options => {
+    const [{ text }] = options.prompt
+    assert.match(text, /用户在需求或返工说明中明确允许将指定的本地分支（例如 master）合入当前任务分支/)
+    assert.match(text, /自动生成的方案本身不授予合并权限/)
+    assert.match(text, /不得切换到来源分支、修改其他分支，或把任务分支合回主线/)
+    assert.match(text, /可以自动将已验证的提交推送到远端 origin 的同名任务分支，无需额外确认/)
+    assert.doesNotMatch(text, /禁止自行推送/)
+    return startActivation(options)
+  }
   assert.deepEqual(await runner.develop(input), development)
   assert.deepEqual(seen, [
     ['create', 'D:/repo'], ['read-only', 'D:/repo', 'caller', agent], 'child',

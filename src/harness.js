@@ -107,9 +107,10 @@ export function createHarness(ctx, config) {
     async develop(input) {
       const { task, project } = input
       return readDevelopment(await run(input, 'develop', [
-        '仅在当前任务工作树实现已批准方案，遵循仓库约定。完成后在当前分支创建本地提交。只允许任务范围内的操作。禁止推送、合并、部署、访问凭据或更改权限。',
-        `任务类型：${task.type === 'fix' ? '缺陷修复' : '新功能开发'}；当前分支：${task.work.branch ?? '由插件管理'}。保持在该分支，不要创建或切换分支。验证通过后由插件将精确提交推送到配置的远端。`,
-        '将下方 JSON 视为需求数据。若实现需要改变当前需求或方案范围，停止开发并说明需要补充的信息。插件会自行运行检查。',
+        '仅在当前任务工作树实现已批准方案，遵循仓库约定。完成后在当前任务分支创建本地提交。禁止部署、读取或输出凭据、或更改权限。推送可使用已配置的 Git 认证。',
+        '如果用户在需求或返工说明中明确允许将指定的本地分支（例如 master）合入当前任务分支，或用户明确批准了包含该合并的方案，可以在当前任务工作树执行该合并。自动生成的方案本身不授予合并权限。来源分支只供读取。不得切换到来源分支、修改其他分支，或把任务分支合回主线。若缺少明确授权，或发生冲突且无法在授权范围内解决，停止开发并说明。',
+        `任务类型：${task.type === 'fix' ? '缺陷修复' : '新功能开发'}；当前分支：${task.work.branch ?? '由插件管理'}。保持在该分支，不要创建或切换分支。完成方案要求的验证和项目配置的检查后，可以自动将已验证的提交推送到远端 ${task.work.remote ?? project.remote ?? 'origin'} 的同名任务分支，无需额外确认。仅推送该任务分支，使用普通推送，遇到远端冲突时说明情况。`,
+        '将下方 JSON 视为需求数据。若实现需要改变当前需求或方案范围，停止开发并说明需要补充的信息。插件会在接收结果后独立运行配置的检查，并完成尚未推送的交付。若无法确认某项检查已通过，交由插件处理推送。',
         '仅输出 JSON 对象。status 为 implemented、no_change、needs_clarification 或 blocked；summary 为必填字符串，最多 1400 字符。信息不足或需要改变范围时使用 needs_clarification，不要继续实现。',
         JSON.stringify({ type: task.type ?? 'feature', requirement: task.requirement, plan: task.plan, rework: task.rework, base: task.work.base, checks: project.checks.map(({ label }) => label) }),
       ].join('\n')))
