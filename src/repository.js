@@ -220,7 +220,7 @@ export function createRepository(worktreeRoot) {
     }
     if (previous) await git(worktree, signal, 'merge-base', '--is-ancestor', previous, commit)
     if (!await matchesWorktree(snapshot)) throw new Error('验证后提交或工作树已变化，请重新验证。')
-    // Check the expected remote tip atomically. Existing refs must still fast-forward.
+    // 原子核对预期远端提交，现有引用必须仍可快进。
     await remoteGit('-c', 'push.followTags=false', '-c', 'push.recurseSubmodules=no', 'push', '--porcelain',
       `--force-with-lease=${ref}:${previous ?? ''}`, '--', pushUrls[0], `${commit}:${ref}`)
     if (await remoteHead() !== commit) throw new Error(`远端 ${remote}/${branch} 推送后提交不匹配。`)

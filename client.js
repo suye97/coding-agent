@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
         projectLoadError: '读取项目仓库失败。', projectInspectError: '无法读取 Git 仓库，请检查本地路径。',
         projectSaveError: '保存项目仓库失败。', projectHint: '选择已有的 Git 仓库，验证通过后任务分支会推送到选定的远程。',
         projectBusy: '正在处理…', push: '已推送到远程', noRepoRemote: '这个仓库还没有 Git 远程。添加远程后重新读取 Git 配置。', noRepoBranch: '这个仓库还没有可用的本地分支。',
-        title: '飞书需求开发', source: '飞书', list: '调度列表',
+        title: '飞书需求开发', eyebrow: 'FEISHU / DEVELOPMENT', subtitle: '查看需求调度、开发进度与项目配置。', source: '飞书', list: '调度列表',
         loading: '正在读取调度记录…', empty: '暂无调度记录', send: '在飞书发送「开发需求｜项目名」或「修复缺陷｜项目名」，下一行填写需求。',
         unconfigured: '配置飞书应用和数据目录后，调度记录会显示在这里。', error: '读取调度记录失败。',
         refresh: '刷新', settings: '插件详情', detail: '开发过程', noHistory: '暂无阶段记录。',
@@ -62,7 +62,7 @@ window.__ModuleLoader__.load({
         projectLoadError: 'Could not read project repositories.', projectInspectError: 'Could not read the Git repository. Check its local path.',
         projectSaveError: 'Could not save project repositories.', projectHint: 'Choose an existing Git repository. Verified task branches are pushed to the selected remote.',
         projectBusy: 'Working…', push: 'Pushed to remote', noRepoRemote: 'This repository has no Git remote. Add one and read its Git configuration again.', noRepoBranch: 'This repository has no local branches.',
-        title: 'Feishu development', source: 'Feishu', list: 'Dispatch history',
+        title: 'Feishu development', eyebrow: 'FEISHU / DEVELOPMENT', subtitle: 'Track requests, development progress, and project settings.', source: 'Feishu', list: 'Dispatch history',
         loading: 'Loading dispatch records…', empty: 'No dispatch records', send: 'Send “开发需求｜Project name” or “修复缺陷｜Project name” to the Feishu bot, followed by the request on the next line.',
         unconfigured: 'Configure the Feishu application and data directory to see dispatch records here.', error: 'Could not read dispatch records.',
         refresh: 'Refresh', settings: 'Plugin details', detail: 'Development history', noHistory: 'No recorded stages.',
@@ -83,84 +83,99 @@ window.__ModuleLoader__.load({
     }
 
     const css = `
-      .feishu-development-panel {
-        --fd-accent: #19a48d;
-        --fd-border: var(--dsw-alias-border-l2);
-        --fd-surface: var(--dsw-alias-bg-layer-1);
-        box-sizing: border-box; block-size: 100%; max-block-size: 100dvh; min-block-size: 0;
-        overflow: clip; padding: 16px clamp(12px, 3vw, 40px) 0;
-        color: var(--dsw-alias-label-primary);
-        background: radial-gradient(ellipse at 85% 0%, color-mix(in srgb, var(--fd-accent) 12%, transparent), transparent 55%);
-      }
-      .feishu-development-content { max-width: 1440px; height: 100%; min-height: 0; margin: 0 auto; display: grid; grid-template-rows: auto auto minmax(0, 1fr); container-type: inline-size; }
-      .feishu-development-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 2px 3px 18px; }
-      .feishu-development-body[data-tab='dispatch'] { overflow: hidden; }
-      .feishu-development-body[data-tab='dispatch'] > [role='tabpanel']:not([hidden]) { height: 100%; }
-      .feishu-development-panel h1 { margin: 0; font-size: 24px; font-weight: 600; }
-      .feishu-development-panel h2 { margin: 0; font-size: 17px; font-weight: 600; }
+      .feishu-development-panel { --fd-surface: var(--dsw-alias-bg-layer-1, #fff); --fd-border: var(--dsw-alias-border-l2, #e5eaf2); --fd-blue: var(--dsw-alias-state-business-primary, #5279df); box-sizing: border-box; height: 100%; min-height: 0; overflow: hidden; padding: clamp(16px, 3vw, 32px) clamp(16px, 4vw, 48px) 0; color: var(--dsw-alias-label-primary); background: color-mix(in srgb, var(--fd-surface) 96%, var(--fd-blue)); }
+      .feishu-development-panel *, .feishu-development-panel *::before, .feishu-development-panel *::after { box-sizing: border-box; }
+      .feishu-development-content { max-width: 1440px; height: 100%; min-height: 0; margin: 0 auto; display: flex; flex-direction: column; container-type: inline-size; }
+      .feishu-development-body { min-height: 0; flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; padding: 6px 2px 28px; }
+      .feishu-development-body[data-tab='dispatch'] { overflow: hidden; padding-bottom: 20px; }
+      .feishu-development-panel h1 { margin: 0; font-size: clamp(24px, 2.5vw, 32px); line-height: 1.2; font-weight: 700; letter-spacing: -.025em; }
+      .feishu-development-panel h2 { margin: 0; font-size: 18px; line-height: 1.35; font-weight: 650; }
       .feishu-development-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-      .feishu-development-list { list-style: none; margin: 12px 0; padding: 0; }
-      .feishu-development-row { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; padding: 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; margin: 0 0 8px; transition: background-color .18s ease, border-color .18s ease, transform .18s ease; }
-      .feishu-development-row:hover { transform: translateX(2px); }
-      .feishu-development-row[aria-current='true'] { background: var(--dsw-alias-interactive-bg-hover); border-color: var(--dsw-alias-state-business-primary); box-shadow: inset 3px 0 var(--dsw-alias-state-business-primary); }
-      .feishu-development-row-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-      .feishu-development-meta { color: var(--dsw-alias-label-secondary); font-size: 12px; }
+      .feishu-development-hero { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; min-width: 0; padding: 4px 0 22px; }
+      .feishu-development-hero-title { display: flex; align-items: center; gap: 18px; min-width: 0; }
+      .feishu-development-hero-icon { width: 58px; height: 58px; flex: none; display: grid; place-items: center; color: #fff; background: var(--fd-blue); border-radius: 16px; box-shadow: 0 8px 20px color-mix(in srgb, var(--fd-blue) 22%, transparent); }
+      .feishu-development-hero-icon svg { width: 28px; height: 28px; }
+      .feishu-development-eyebrow { margin: 0 0 5px; color: var(--dsw-alias-label-secondary); font-size: 11px; font-weight: 700; letter-spacing: .1em; }
+      .feishu-development-subtitle { margin: 6px 0 0; color: var(--dsw-alias-label-secondary); font-size: 13px; }
+      .feishu-development-list { list-style: none; margin: 14px 0 0; padding: 0; }
+      .feishu-development-row { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; padding: 14px; border: 1px solid var(--fd-border); border-radius: 12px; margin: 0 0 10px; background: var(--fd-surface); transition: background-color .18s ease, border-color .18s ease, box-shadow .18s ease; }
+      .feishu-development-row[aria-current='true'], .feishu-development-panel button.feishu-development-row[aria-current='true']:hover { background: color-mix(in srgb, var(--fd-surface) 92%, var(--fd-blue)); border-color: var(--fd-blue); box-shadow: inset 3px 0 var(--fd-blue); }
+      .feishu-development-row-title, .feishu-development-row strong { display: block; overflow-wrap: anywhere; font-weight: 650; }
+      .feishu-development-meta { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
       .feishu-development-panel button { font: inherit; color: inherit; background: transparent; cursor: pointer; }
-      .feishu-development-button { padding: 6px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; transition: background-color .18s ease, border-color .18s ease; }
+      .feishu-development-button { min-height: 36px; padding: 7px 14px; border: 1px solid var(--fd-border); border-radius: 9px; background: var(--fd-surface) !important; font-weight: 600 !important; transition: background-color .18s ease, border-color .18s ease, box-shadow .18s ease; }
+      .feishu-development-button-primary { color: #fff !important; background: var(--fd-blue) !important; border-color: var(--fd-blue); box-shadow: 0 4px 12px color-mix(in srgb, var(--fd-blue) 18%, transparent); }
       .feishu-development-panel button:hover { background: var(--dsw-alias-interactive-bg-hover); }
-      .feishu-development-panel button:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 2px; }
-      .feishu-development-dispatch { display: grid; height: 100%; grid-template-columns: minmax(215px, 310px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 16px; }
-      .feishu-development-tasks, .feishu-development-output { min-width: 0; min-height: 0; border: 1px solid var(--fd-border); border-radius: 16px; background: var(--fd-surface); }
-      .feishu-development-tasks { display: flex; flex-direction: column; padding: 14px; }
-      .feishu-development-tasks > .feishu-development-heading { flex: none; }
-      .feishu-development-output { padding: clamp(14px, 2vw, 28px); overflow: auto; scrollbar-gutter: stable; overscroll-behavior: contain; }
-      .feishu-development-output-enter { animation: feishu-development-enter .26s cubic-bezier(.2,.7,.2,1) both; }
-      .feishu-development-output-heading { margin-bottom: 16px; }
-      .feishu-development-output-heading h2 { margin-bottom: 6px; overflow-wrap: anywhere; }
+      .feishu-development-panel button.feishu-development-row:not([aria-current='true']):hover { background: color-mix(in srgb, var(--fd-surface) 95%, var(--fd-blue)); border-color: var(--fd-blue); }
+      .feishu-development-button:hover { background: color-mix(in srgb, var(--fd-surface) 90%, var(--fd-blue)) !important; }
+      .feishu-development-button-primary:hover { background: color-mix(in srgb, var(--fd-blue) 86%, #000) !important; }
+      .feishu-development-panel :is(button, input, select, summary):focus-visible { outline: 2px solid var(--fd-blue); outline-offset: 2px; }
+      .feishu-development-output:focus-visible { outline: 2px solid var(--fd-blue); outline-offset: -2px; }
+      .feishu-development-tabpanel { height: 100%; min-height: 0; }
+      .feishu-development-dispatch { display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 20px; height: 100%; min-height: 0; animation: feishu-development-enter .2s ease-out; }
+      .feishu-development-tasks, .feishu-development-output { min-width: 0; min-height: 0; padding: 22px; background: var(--fd-surface); border: 1px solid var(--fd-border); border-radius: 14px; box-shadow: 0 5px 18px color-mix(in srgb, var(--dsw-alias-label-primary, #233047) 4%, transparent); }
+      .feishu-development-tasks { display: flex; flex-direction: column; }
+      .feishu-development-output { overflow: auto; scrollbar-gutter: stable; }
+      .feishu-development-output-heading { margin-bottom: 18px; padding-bottom: 16px; border-bottom: 1px solid var(--fd-border); }
+      .feishu-development-output-heading h2 { margin-bottom: 7px; overflow-wrap: anywhere; }
       .feishu-development-output-heading p { margin: 0; }
-      .feishu-development-task-list { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; margin-bottom: 0; padding-right: 4px; }
-      .feishu-development-task-list .feishu-development-row { display: grid; gap: 4px; }
+      .feishu-development-task-list { min-height: 0; flex: 1; overflow: auto; scrollbar-gutter: stable; }
+      .feishu-development-task-list .feishu-development-row { display: grid; gap: 6px; }
       .feishu-development-task-list .feishu-development-row:focus-visible { outline-offset: -2px; }
-      .feishu-development-output details > summary { cursor: pointer; }
-      .feishu-development-output details { margin: 12px 0; }
+      .feishu-development-output details > summary { cursor: pointer; font-weight: 600; }
+      .feishu-development-output details { margin: 14px 0; padding: 12px 14px; border: 1px solid var(--fd-border); border-radius: 10px; }
       .feishu-development-output details[open] { animation: feishu-development-enter .18s ease-out; }
       .feishu-development-response { margin-top: 10px; padding: 2px 14px; border-left: 2px solid var(--dsw-alias-state-business-primary); max-width: 72ch; }
       .feishu-development-stream { max-height: 22rem; overflow: auto; padding: 8px 4px; }
       .feishu-development-stream pre { margin: 0; font: inherit; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-      .feishu-development-timeline { list-style: none; margin: 20px 0 0; padding: 0 0 0 15px; border-left: 1px solid var(--dsw-alias-border-l2); }
-      .feishu-development-timeline > li { position: relative; padding: 0 0 18px 8px; overflow-wrap: anywhere; }
+      .feishu-development-timeline { list-style: none; margin: 20px 0 0 5px; padding: 0 0 0 20px; border-left: 1px solid var(--fd-border); }
+      .feishu-development-timeline > li { position: relative; padding: 0 0 24px 10px; overflow-wrap: anywhere; }
       .feishu-development-timeline > li::before { content: ''; position: absolute; left: -20px; top: .4em; width: 9px; height: 9px; border-radius: 50%; background: var(--stage-color, var(--dsw-alias-label-secondary)); }
-      .feishu-development-timeline > li:last-child { border-radius: 8px; background: var(--dsw-alias-interactive-bg-hover); }
-      .feishu-development-timeline > li:last-child::before { box-shadow: 0 0 0 4px var(--dsw-alias-interactive-bg-hover); }
-      .feishu-development-row[data-stage], .feishu-development-timeline > li[data-stage] { --stage-color: var(--dsw-alias-label-secondary); }
-      .feishu-development-row[data-stage='designing'], .feishu-development-row[data-stage='developing'], .feishu-development-row[data-stage='verifying'], .feishu-development-timeline > li[data-stage='designing'], .feishu-development-timeline > li[data-stage='developing'], .feishu-development-timeline > li[data-stage='verifying'] { --stage-color: var(--dsw-alias-state-business-primary); }
-      .feishu-development-row[data-stage='blocked'], .feishu-development-timeline > li[data-stage='blocked'] { --stage-color: var(--dsw-alias-state-error, #b5474e); }
-      .feishu-development-row[data-stage='accepted'], .feishu-development-timeline > li[data-stage='accepted'] { --stage-color: var(--dsw-alias-state-success, #14805c); }
-      .feishu-development-panel [data-stage='review'], .feishu-development-panel [data-stage='accepted'] { --stage-color: var(--dsw-alias-state-success, #19865f); }
-      .feishu-development-panel [data-stage='confirm'], .feishu-development-panel [data-stage='approval'], .feishu-development-panel [data-stage='held'], .feishu-development-panel [data-stage='manual_review'] { --stage-color: var(--dsw-alias-state-warning, var(--dsw-alias-label-primary)); }
-      .feishu-development-status { display: inline-flex; align-items: center; gap: 6px; width: fit-content; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary); background: color-mix(in srgb, var(--stage-color, var(--fd-accent)) 15%, transparent); }
-      .feishu-development-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--stage-color, var(--fd-accent)); }
-      .feishu-development-row:is([data-stage='designing'], [data-stage='developing'], [data-stage='verifying']) .feishu-development-status::before { animation: feishu-development-pulse 1.8s ease-in-out infinite; }
-      @keyframes feishu-development-pulse { 50% { opacity: .48; transform: scale(.8); } }
+      .feishu-development-timeline > li:last-child { padding: 12px; border: 1px solid var(--fd-border); border-radius: 10px; background: color-mix(in srgb, var(--fd-surface) 96%, var(--fd-blue)); }
+      .feishu-development-timeline > li:last-child::before { left: -28px; top: 16px; box-shadow: 0 0 0 4px var(--fd-surface); }
+      .feishu-development-row[data-stage], .feishu-development-output[data-stage], .feishu-development-timeline > li[data-stage] { --stage-color: var(--dsw-alias-label-secondary); }
+      .feishu-development-row[data-stage='designing'], .feishu-development-row[data-stage='developing'], .feishu-development-row[data-stage='verifying'], .feishu-development-output[data-stage='designing'], .feishu-development-output[data-stage='developing'], .feishu-development-output[data-stage='verifying'], .feishu-development-timeline > li[data-stage='designing'], .feishu-development-timeline > li[data-stage='developing'], .feishu-development-timeline > li[data-stage='verifying'] { --stage-color: var(--fd-blue); }
+      .feishu-development-row[data-stage='blocked'], .feishu-development-output[data-stage='blocked'], .feishu-development-timeline > li[data-stage='blocked'] { --stage-color: var(--dsw-alias-state-error, #b5474e); }
+      .feishu-development-row[data-stage='accepted'], .feishu-development-output[data-stage='accepted'], .feishu-development-timeline > li[data-stage='accepted'] { --stage-color: var(--dsw-alias-state-success, #14805c); }
+      .feishu-development-panel [data-stage='review'] { --stage-color: var(--dsw-alias-state-success, #14805c); }
+      .feishu-development-panel :is([data-stage='confirm'], [data-stage='approval'], [data-stage='held'], [data-stage='manual_review']) { --stage-color: var(--dsw-alias-state-warning, var(--dsw-alias-label-primary)); }
+      .feishu-development-status { display: inline-flex; align-items: center; width: fit-content; padding: 3px 8px; border-radius: 6px; color: var(--stage-color, var(--dsw-alias-label-secondary)); background: color-mix(in srgb, var(--fd-surface) 88%, var(--stage-color, var(--dsw-alias-label-secondary))); font-size: 12px; font-weight: 700; }
+      .feishu-development-detail-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
       .feishu-development-field { display: grid; gap: 3px; margin: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
       .feishu-development-field strong { font-size: 12px; }
       .feishu-development-panel p { line-height: 1.6; }
-      .feishu-development-tabs { display: flex; gap: 4px; min-width: 0; overflow-x: auto; padding: 4px; border: 1px solid var(--fd-border); border-radius: 12px; background: var(--fd-surface); margin: 12px 0; }
-      .feishu-development-tabs button { flex: none; padding: 8px 13px; border: 1px solid transparent; border-radius: 8px; color: var(--dsw-alias-label-secondary); transition: color .18s ease, background-color .18s ease, border-color .18s ease; }
-      .feishu-development-tabs button:focus-visible { outline-offset: -2px; }
-      .feishu-development-tabs button[aria-selected='true'] { color: var(--dsw-alias-label-primary); background: color-mix(in srgb, var(--fd-accent) 17%, var(--fd-surface)); border-color: color-mix(in srgb, var(--fd-accent) 40%, transparent); font-weight: 600; }
-      .feishu-development-tabpanel:not([hidden]) { animation: feishu-development-enter .2s ease-out; }
+      .feishu-development-tabs { display: flex; gap: 20px; flex: none; overflow-x: auto; border-bottom: 1px solid var(--fd-border); margin: 0 0 18px; }
+      .feishu-development-tabs button { flex: none; padding: 13px 4px 12px; border: 0; border-bottom: 3px solid transparent; color: var(--dsw-alias-label-secondary); font-weight: 600; transition: color .18s ease, border-color .18s ease; }
+      .feishu-development-tabs button[aria-selected='true'] { color: var(--fd-blue); border-bottom-color: var(--fd-blue); }
+      .feishu-development-tabs button:hover { background: transparent; color: var(--fd-blue); }
+      .feishu-development-tabpanel { animation: feishu-development-enter .2s ease-out; }
       @keyframes feishu-development-enter { from { opacity: .65; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-      @media (prefers-reduced-motion: reduce) { .feishu-development-panel *, .feishu-development-panel *::before, .feishu-development-panel *::after { animation: none !important; transition: none !important; } }
-      .feishu-development-form { max-width: 540px; display: grid; gap: 16px; margin: 16px 0; }
-      .feishu-development-form label { display: grid; gap: 6px; }
-      .feishu-development-form select, .feishu-development-form input:not([type='checkbox']) { font: inherit; color: inherit; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l3); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+      @media (prefers-reduced-motion: reduce) { .feishu-development-panel *, .feishu-development-panel *::before, .feishu-development-panel *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+      .feishu-development-settings { max-width: 960px; min-height: 100%; padding: clamp(18px, 3vw, 32px); background: var(--fd-surface); border: 1px solid var(--fd-border); border-radius: 14px; box-shadow: 0 5px 18px color-mix(in srgb, var(--dsw-alias-label-primary, #233047) 4%, transparent); }
+      .feishu-development-settings > h2 { margin-bottom: 6px; }
+      .feishu-development-settings > .feishu-development-meta { margin: 0 0 24px; }
+      .feishu-development-form { max-width: 620px; display: grid; gap: 18px; margin: 20px 0; }
+      .feishu-development-form label { display: grid; gap: 7px; min-width: 0; font-weight: 600; }
+      .feishu-development-form select, .feishu-development-form input:not([type='checkbox']) { width: 100%; min-height: 40px; font: inherit; font-weight: 400; color: inherit; background: var(--fd-surface); border: 1px solid var(--dsw-alias-border-l3, var(--fd-border)); border-radius: 9px; padding: 9px 12px; min-width: 0; }
+      .feishu-development-form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+      .feishu-development-form button[type='submit'] { color: #fff !important; background: var(--fd-blue) !important; border-color: var(--fd-blue); }
+      .feishu-development-form button[type='submit']:hover { background: color-mix(in srgb, var(--fd-blue) 86%, #000) !important; }
       .feishu-development-form label.feishu-development-toggle { display: flex; align-items: center; }
       .feishu-development-form button:disabled { opacity: .6; cursor: default; }
       @container (max-width: 680px) {
-        .feishu-development-dispatch { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, auto) minmax(0, 1fr); gap: 10px; }
-        .feishu-development-tasks { max-height: min(28dvh, 220px); }
-        .feishu-development-tasks:only-child { grid-row: 1 / -1; max-height: none; }
+        .feishu-development-body[data-tab='dispatch'] { overflow-y: auto; }
+        .feishu-development-tabpanel, .feishu-development-dispatch { height: auto; }
+        .feishu-development-dispatch { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+        .feishu-development-task-list { max-height: 35vh; flex: none; }
+        .feishu-development-output { overflow: visible; }
+      }
+      @container (max-width: 420px) {
+        .feishu-development-hero-title { gap: 11px; }
+        .feishu-development-hero-icon { width: 44px; height: 44px; border-radius: 12px; }
+        .feishu-development-hero-icon svg { width: 23px; height: 23px; }
+        .feishu-development-tabs { gap: 14px; }
+        .feishu-development-tasks, .feishu-development-output { padding: 16px; }
+        .feishu-development-row { flex-wrap: wrap; }
       }
     `
 
@@ -278,12 +293,12 @@ window.__ModuleLoader__.load({
       const history = detail?.history ?? []
       const current = history.at(-1)
       const activeAttemptId = ['designing', 'developing'].includes(current?.stage) ? current.attempt?.id : undefined
-      return h('section', { id: `${id}-output`, className: 'feishu-development-output', tabIndex: 0, 'aria-labelledby': `${id}-output-title` },
-        h('div', { className: 'feishu-development-output-enter' },
-        h('div', { className: 'feishu-development-output-heading', 'data-stage': row.stage },
+      return h('section', { id: `${id}-output`, className: 'feishu-development-output', tabIndex: 0, 'data-stage': row.stage, 'aria-labelledby': `${id}-output-title` },
+        h('div', { className: 'feishu-development-output-heading' },
           h('h2', { id: `${id}-output-title` }, row.summary || t('detail')),
-          h('p', { className: 'feishu-development-meta' }, [row.project, row.id].filter(Boolean).join(' · '), ' ',
-             h('span', { className: 'feishu-development-status' }, t(row.stage)))),
+          h('div', { className: 'feishu-development-detail-meta' },
+            h('span', { className: 'feishu-development-meta' }, [row.project, row.id].filter(Boolean).join(' · ')),
+            h('span', { className: 'feishu-development-status' }, t(row.stage)))),
         state.loading && !detail && h('p', { role: 'status' }, t('loading')),
         state.error && h('p', { role: 'alert' }, t('error'), ' ', h('button', {
           className: 'feishu-development-button', type: 'button',
@@ -300,7 +315,7 @@ window.__ModuleLoader__.load({
             h(Field, { label: t('deliveryCode'), value: lastError.code }),
             h(Field, { label: 'HTTP', value: lastError.httpStatus }),
             h(Field, { label: t('deliveryLogId'), value: lastError.logId })),
-          h(Timeline, { entries: history, activeAttemptId, modelOutputs: detail.modelOutputs, t }))))
+          h(Timeline, { entries: history, activeAttemptId, modelOutputs: detail.modelOutputs, t })))
     }
 
     function ChannelSettings({ t, loadChannel, saveChannel, hidden }) {
@@ -345,6 +360,7 @@ window.__ModuleLoader__.load({
       }))
       const source = draft?.tapdCardSource ?? { chatId: '', senderId: '', operatorId: '' }
       const changeSource = (key, value) => change('tapdCardSource', { ...source, [key]: value })
+      // 从服务端刷新最近收到的群卡片，并保留尚未保存的表单内容。
       async function readGroupCard() {
         setBusy(true)
         setMessage(null)
@@ -358,7 +374,7 @@ window.__ModuleLoader__.load({
           setBusy(false)
         }
       }
-      return h('section', { hidden, role: 'tabpanel', id: `${id}-channel-panel`, 'aria-labelledby': `${id}-channel-tab` },
+      return h('section', { hidden, className: 'feishu-development-settings', role: 'tabpanel', id: `${id}-channel-panel`, 'aria-labelledby': `${id}-channel-tab` },
         h('h2', null, t('source')),
         h('p', { className: 'feishu-development-meta' }, t('channelHint')),
         !draft && !message && h('p', { role: 'status' }, t('channelLoad')),
@@ -384,7 +400,7 @@ window.__ModuleLoader__.load({
           h('label', { className: 'feishu-development-toggle' }, h('input', {
             type: 'checkbox', checked: Boolean(draft.enabled), disabled: busy, onChange: event => change('enabled', event.target.checked),
           }), t('channelEnabled')),
-          h('div', null, h('button', { type: 'submit', disabled: busy, className: 'feishu-development-button' }, t(busy ? 'channelSaving' : 'channelSave')))),
+          h('div', { className: 'feishu-development-form-actions' }, h('button', { type: 'submit', disabled: busy, className: 'feishu-development-button feishu-development-button-primary' }, t(busy ? 'channelSaving' : 'channelSave')))),
         message && h('p', { role: message.error ? 'alert' : 'status' }, message.reason || t(message.key)),
         !draft && message && h('button', { className: 'feishu-development-button', type: 'button', onClick: () => { setMessage(null); setReload(value => value + 1) } }, t('refresh')))
     }
@@ -427,7 +443,7 @@ window.__ModuleLoader__.load({
       const field = (key, options = {}) => h('label', { key }, t(key), h('input', {
         required: true, value: draft[key] ?? '', disabled: busy, onChange: event => change(key, event.target.value), ...options,
       }))
-      return h('section', { hidden, role: 'tabpanel', id: `${id}-claude-panel`, 'aria-labelledby': `${id}-claude-tab` },
+      return h('section', { hidden, className: 'feishu-development-settings', role: 'tabpanel', id: `${id}-claude-panel`, 'aria-labelledby': `${id}-claude-tab` },
         h('h2', null, t('claudeTab')),
         h('p', { className: 'feishu-development-meta' }, t('claudeHint')),
         !draft && !message && h('p', { role: 'status' }, t('claudeLoad')),
@@ -436,7 +452,7 @@ window.__ModuleLoader__.load({
           field('model', { spellCheck: false }),
           field('apiKey', { required: false, type: 'password', autoComplete: 'new-password', spellCheck: false }),
           h('span', { className: 'feishu-development-meta' }, t(draft.apiKeyConfigured ? 'secretSet' : 'secretUnset')),
-          h('div', null, h('button', { type: 'submit', disabled: busy, className: 'feishu-development-button' }, t(busy ? 'channelSaving' : 'claudeSave')))),
+          h('div', { className: 'feishu-development-form-actions' }, h('button', { type: 'submit', disabled: busy, className: 'feishu-development-button feishu-development-button-primary' }, t(busy ? 'channelSaving' : 'claudeSave')))),
         message && h('p', { role: message.error ? 'alert' : 'status' }, message.reason || t(message.key)),
         !draft && message && h('button', { className: 'feishu-development-button', type: 'button', onClick: () => { setMessage(null); setReload(value => value + 1) } }, t('refresh')))
     }
@@ -502,7 +518,8 @@ window.__ModuleLoader__.load({
       const select = (key, options) => h('label', null, t(key), h('select', {
         required: true, value: editor.project[key] ?? '', disabled: busy, onChange: event => change(key, event.target.value),
       }, h('option', { value: '', disabled: true }, '—'), options.map(option => h('option', { key: option, value: option }, option))))
-      return h('section', { hidden, role: 'tabpanel', id: `${id}-projects-panel`, 'aria-labelledby': `${id}-projects-tab` },
+      return h('section', { hidden, className: 'feishu-development-settings', role: 'tabpanel', id: `${id}-projects-panel`, 'aria-labelledby': `${id}-projects-tab` },
+        h('h2', null, t('projectsTab')),
         h('p', { className: 'feishu-development-meta' }, t('projectHint')),
         !projects && !message && h('p', { role: 'status' }, t('projectBusy')),
         !projects && message && button('refresh', { onClick: () => { setMessage(null); setReload(value => value + 1) } }),
@@ -516,7 +533,7 @@ window.__ModuleLoader__.load({
             event.preventDefault()
             if (path.trim() && !busy) void perform('projectInspectError', () => inspect(path.trim()))
           } }, h('label', null, t('projectPath'), h('input', { value: path, disabled: busy, onChange: event => setPath(event.target.value), spellCheck: false })),
-          h('div', { style: { display: 'flex', gap: 8 } }, projectApi.pick && button('chooseFolder', { onClick: () => void perform('projectInspectError', async () => {
+          h('div', { className: 'feishu-development-form-actions' }, projectApi.pick && button('chooseFolder', { onClick: () => void perform('projectInspectError', async () => {
             const folder = await projectApi.pick()
             if (folder) await inspect(folder)
           }) }), button('inspectRepo', { type: 'submit', disabled: busy || !path.trim() }))),
@@ -530,7 +547,7 @@ window.__ModuleLoader__.load({
             select('baseBranch', editor.repo.branches), select('remote', editor.repo.remotes),
             !editor.repo.branches.length && h('p', { role: 'status' }, t('noRepoBranch')),
             !editor.repo.remotes.length && h('p', { role: 'status' }, t('noRepoRemote')),
-            h('div', { style: { display: 'flex', gap: 8 } },
+            h('div', { className: 'feishu-development-form-actions' },
               button(editor.index < 0 ? 'projectAdd' : 'channelSave', { type: 'submit', disabled: busy || !editor.project.baseBranch || !editor.project.remote }),
               button('projectCancel', { onClick: () => { setEditor(null); setPath(''); setMessage(null) } })))),
         busy && h('p', { role: 'status' }, t('projectBusy')),
@@ -605,7 +622,13 @@ window.__ModuleLoader__.load({
       return h('main', { className: 'feishu-development-panel', 'aria-labelledby': `${id}-title` },
         h('style', null, css),
         h('div', { className: 'feishu-development-content' },
-          h('div', { className: 'feishu-development-heading' }, h('h1', { id: `${id}-title` }, t('title')),
+          h('div', { className: 'feishu-development-hero' },
+            h('div', { className: 'feishu-development-hero-title' },
+              h('div', { className: 'feishu-development-hero-icon' }, h(Icon)),
+              h('div', null,
+                h('p', { className: 'feishu-development-eyebrow' }, t('eyebrow')),
+                h('h1', { id: `${id}-title` }, t('title')),
+                h('p', { className: 'feishu-development-subtitle' }, t('subtitle')))),
             h('button', { className: 'feishu-development-button', type: 'button', onClick: openDetails }, t('settings'))),
           h('div', { className: 'feishu-development-tabs', role: 'tablist', 'aria-label': t('title'), onKeyDown: handleTabKey },
             panelTabs.map(key => h('button', { key, id: `${id}-${key}-tab`, ref: element => { tabs.current[key] = element },

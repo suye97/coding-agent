@@ -1,4 +1,4 @@
-// External providers in Desktop accept text prompts and can open local image paths with their native tools.
+// Desktop 的外部模型接收文本提示，并可用原生工具打开本地图片路径。
 export async function composeImagePrompt(instructions, task, loadAttachment) {
   const refs = task.attachments ?? []
   if (!refs.length) return [{ type: 'text', text: instructions }]

@@ -64,7 +64,7 @@ function jpegSize(bytes) {
     if (scan && (!dimensions || length < 8 || length !== 6 + 2 * bytes[offset + 2])) break;
     offset = end;
     if (scan) {
-      // Skip stuffed bytes and restart markers within the entropy-coded scan.
+      // 跳过熵编码扫描中的填充字节和重启标记。
       for (;;) {
         const next = bytes.indexOf(0xff, offset);
         if (next < 0) throw invalidImage();
@@ -120,7 +120,7 @@ function webpSize(bytes) {
   return dimensions;
 }
 
-/** Check the image container, declared media type, and size before storing or loading. */
+/** 存储或加载前检查图片容器、声明的媒体类型和尺寸。 */
 export function validateAttachmentImage(bytes, contentType) {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_ATTACHMENT_BYTES) throw invalidImage();
   let extension;
@@ -190,7 +190,7 @@ async function readAttachment(path) {
   }
 }
 
-/** Store each image under a task and application, with a digest as its stable ID. */
+/** 按任务和应用存储图片，并以摘要作为稳定标识。 */
 export function createAttachmentStore({ directory, appId }) {
   if (typeof directory !== 'string' || !isAbsolute(directory) || typeof appId !== 'string' || !appId) {
     throw new TypeError('Invalid attachment store options');

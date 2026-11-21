@@ -25,7 +25,7 @@ function imageKeys(message) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
   if (type === 'image') return isImageKey(data.image_key) ? [data.image_key] : [];
 
-  // Structured image nodes belong to the message. Markdown text can contain arbitrary links and keys.
+  // 结构化图片节点属于消息正文；Markdown 文本可能包含任意链接和密钥。
   const post = ('title' in data || 'content' in data || 'content_v2' in data) ? data :
     ['zh_cn', 'en_us', 'ja_jp', ...Object.keys(data)].map(key => data[key]).find(value => value && typeof value === 'object');
   const paragraphs = post?.content_v2?.length ? post.content_v2 : post?.content;
@@ -57,7 +57,7 @@ function isTapdCardSource(message, source) {
     observed.senderIds.includes(source.senderId);
 }
 
-// Feishu's receive event may contain the flattened card format instead of the original card DSL.
+// 飞书接收事件可能包含扁平化卡片格式，而非原始卡片描述。
 function receivedCardText(raw) {
   if (typeof raw !== 'string' || raw.length > 128 * 1024) return '';
   let card;
@@ -95,7 +95,7 @@ function parseTapdCardText(content) {
   return { title, details };
 }
 
-/** Normalize a human message from a DM or group and retain only structured image resources. */
+/** 规范化单聊或群聊中的人工消息，仅保留结构化图片资源。 */
 export function normalizeFeishuMessage(message) {
   if (!['p2p', 'group'].includes(message.chatType) || message.senderType !== 'user' ||
       !['text', 'post', 'merge_forward', 'image'].includes(message.rawContentType)) return null;
@@ -139,7 +139,7 @@ async function boundedBody(response, limit) {
   }
 }
 
-/** Retrieve an authorized resource through Feishu's fixed HTTPS API endpoints. */
+/** 通过飞书固定的 HTTPS 接口读取已授权资源。 */
 export function createFeishuAttachmentDownloader({ appId, appSecret, fetchImpl = globalThis.fetch }) {
   let token;
   let tokenRequest;
@@ -193,7 +193,7 @@ export function createFeishuAttachmentDownloader({ appId, appSecret, fetchImpl =
       }
       return validateAttachmentImage(await boundedBody(response, MAX_ATTACHMENT_BYTES), response.headers.get('content-type'));
     } catch {
-      // Transport errors and API responses can expose the application credentials.
+      // 传输错误和接口响应可能泄露应用凭据。
       throw new Error('Feishu image download or validation failed');
     }
   };
@@ -328,7 +328,7 @@ export async function createFeishuChannel({ appId, appSecret, tapdCardSource, on
     }
   }
 
-  // Observe platform delivery even if SDK normalization or policy drops the event.
+  // 即使 SDK 规范化或策略丢弃事件，也记录平台投递状态。
   channel.onRawEvent('im.message.receive_v1', event => {
     const raw = event.message;
     const observed = groupCardSource({ chatType: raw?.chat_type, rawContentType: raw?.message_type,

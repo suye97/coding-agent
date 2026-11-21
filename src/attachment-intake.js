@@ -1,6 +1,6 @@
 import { MAX_TASK_ATTACHMENTS } from './attachments.js'
 
-// Resolve the owning card before making any request for Feishu message resources.
+// 请求飞书消息资源前，先确定图片所属的任务卡片。
 export async function receiveTaskMessage(workflow, channel, attachmentStore, message) {
   if (!message.attachments?.length) return workflow.onMessage(message)
   const taskId = workflow.attachmentTarget(message)

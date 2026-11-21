@@ -102,7 +102,7 @@ function requirement(text) {
   return { body }
 }
 
-// Match a complete configured name first, then the longest name before an inline separator.
+// 先匹配完整配置名称，再匹配行内分隔符前的最长名称。
 function parseRequest(text, projects, exactProject = false) {
   const firstLine = text.match(/^(开发需求|修复缺陷|修复bug)(?:[ \t]*[｜|][ \t]*([^\r\n]*))?[ \t]*(?:\r?\n|$)/iu)
   if (!firstLine) return
@@ -120,7 +120,7 @@ function parseRequest(text, projects, exactProject = false) {
     }
   }
   const parsed = requirement([inline, nextLines].filter(Boolean).join('\n'))
-  // A TAPD description can request a deletion. Its approval comes from the operator.
+  // TAPD 描述可以提出删除请求，实际授权须由操作人给出。
   if (exactProject) parsed.body = parsed.body.replace(/^[^\S\r\n]*删除文件[：:]/gmu, 'TAPD 请求删除文件：')
   return { type: firstLine[1] === '开发需求' ? 'feature' : 'fix', project, requirement: parsed }
 }

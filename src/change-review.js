@@ -10,13 +10,13 @@ const suspicious = [
 const maxFindings = 12
 const maxPathLength = 180
 
-// Exact, human-authored paths are the only automatic deletion authorization.
+// 只有人工逐行填写的精确路径才构成自动删除授权。
 function approvedDeletions(requirement) {
   return new Set((requirement ?? '').split(/\r?\n/u)
     .map(line => line.match(deletionDirective)?.[1]).filter(Boolean))
 }
 
-// Disabling rename detection preserves the original path in the authorization check.
+// 关闭重命名检测，以便授权核对保留原始路径。
 export async function inspectChanges({ commit, comparisons, requirement, approval, diffEntries, addedLines }) {
   const deletions = new Set()
   const warnings = new Map()

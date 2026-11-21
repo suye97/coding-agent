@@ -105,7 +105,7 @@ function codexText(append) {
   }
 }
 
-// Capture assertion records from completed provider tool results, independently of assistant text.
+// 从已完成的模型工具结果提取断言记录，不依赖助手文本。
 function observeAssertions(kind, record) {
   const pending = new Set()
   let thread, turn
