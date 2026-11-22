@@ -38,7 +38,11 @@ export function openStore(path) {
   }
 
   function save(task) {
-    task.revision = (task.revision ?? 0) + 1
+    const persisted = get(task.id)
+    const currentRevision = persisted?.revision ?? 0
+    if ((task.revision ?? 0) !== currentRevision) throw new Error('任务状态已被其他操作更新，请基于最新状态重试。')
+    const latest = db.prepare('SELECT MAX(revision) AS revision FROM history WHERE task = ?').get(task.id)?.revision ?? 0
+    task.revision = Math.max(currentRevision, latest) + 1
     task.recordedAt = Date.now()
     const body = JSON.stringify(task)
     db.prepare(`INSERT INTO tasks VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET stage=excluded.stage, body=excluded.body`)
