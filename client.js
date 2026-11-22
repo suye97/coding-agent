@@ -93,6 +93,7 @@ window.__ModuleLoader__.load({
       .feishu-development-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
       .feishu-development-hero { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; min-width: 0; padding: 4px 0 22px; }
       .feishu-development-hero-title { display: flex; align-items: center; gap: 18px; min-width: 0; }
+      .feishu-development-hero-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
       .feishu-development-hero-icon { width: 58px; height: 58px; flex: none; display: grid; place-items: center; color: #fff; background: var(--fd-blue); border-radius: 16px; box-shadow: 0 8px 20px color-mix(in srgb, var(--fd-blue) 22%, transparent); }
       .feishu-development-hero-icon svg { width: 28px; height: 28px; }
       .feishu-development-eyebrow { margin: 0 0 5px; color: var(--fd-muted); font-size: 11px; font-weight: 700; letter-spacing: .1em; }
@@ -116,9 +117,11 @@ window.__ModuleLoader__.load({
       .feishu-development-button-icon svg { width: 16px; height: 16px; flex: none; }
       .feishu-development-panel :is(button, input, select, summary):focus-visible { outline: 2px solid var(--fd-blue); outline-offset: 2px; }
       .feishu-development-output:focus-visible { outline: 2px solid var(--fd-blue); outline-offset: -2px; }
-      .feishu-development-readout { flex: none; display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 11px 18px; margin: 0 0 24px; border: 1px solid var(--fd-border); border-radius: 11px; background: var(--fd-surface); color: var(--fd-muted); font-size: 13px; overflow-wrap: anywhere; }
+      .feishu-development-readout { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-height: 56px; padding: 11px 18px; margin: 0 0 24px; border: 1px solid var(--fd-border); border-radius: 11px; background: var(--fd-surface); color: var(--fd-muted); font-size: 13px; overflow-wrap: anywhere; }
       .feishu-development-readout::before { content: ''; width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--fd-readout-color, var(--fd-blue)); }
       .feishu-development-readout strong { color: var(--fd-ink); font-size: 13px; }
+      .feishu-development-readout-count { margin-left: auto; color: var(--fd-ink); font-weight: 600; white-space: nowrap; }
+      .feishu-development-readout-count strong { font-size: 22px; font-variant-numeric: tabular-nums; }
       .feishu-development-readout[data-result='ready'] { --fd-readout-color: var(--dsw-alias-state-success, #14805c); }
       .feishu-development-readout[data-result='failed'], .feishu-development-readout[data-result='stale'] { --fd-readout-color: var(--dsw-alias-state-error, #b5474e); }
       .feishu-development-readout[data-result='unconfigured'] { --fd-readout-color: var(--dsw-alias-state-warning, #9a6b17); }
@@ -126,6 +129,10 @@ window.__ModuleLoader__.load({
       .feishu-development-dispatch { display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 20px; height: 100%; min-height: 0; animation: feishu-development-enter .2s ease-out; }
       .feishu-development-tasks, .feishu-development-output { min-width: 0; min-height: 0; padding: 24px; background: var(--fd-surface); border: 1px solid var(--fd-border); border-radius: 14px; box-shadow: 0 5px 18px color-mix(in srgb, var(--fd-ink) 4%, transparent); }
       .feishu-development-tasks { display: flex; flex-direction: column; }
+      .feishu-development-tasks > .feishu-development-heading { padding-bottom: 16px; border-bottom: 1px solid var(--fd-border); }
+      .feishu-development-empty { margin-top: 22px; padding: 24px 18px; border: 1px dashed var(--fd-border); border-radius: 11px; text-align: center; background: color-mix(in srgb, var(--fd-surface) 97%, var(--fd-blue)); }
+      .feishu-development-empty p { margin: 0; }
+      .feishu-development-empty p + p { margin-top: 8px; }
       .feishu-development-output { overflow: auto; scrollbar-gutter: stable; }
       .feishu-development-output-heading { margin-bottom: 18px; padding-bottom: 16px; border-bottom: 1px solid var(--fd-border); }
       .feishu-development-output-heading h2 { margin-bottom: 7px; overflow-wrap: anywhere; }
@@ -195,6 +202,7 @@ window.__ModuleLoader__.load({
         .feishu-development-output { overflow: visible; }
       }
       @container (max-width: 420px) {
+        .feishu-development-hero-actions { width: 100%; justify-content: flex-start; }
         .feishu-development-hero-title { gap: 11px; }
         .feishu-development-hero-icon { width: 44px; height: 44px; border-radius: 12px; }
         .feishu-development-hero-icon svg { width: 23px; height: 23px; }
@@ -602,6 +610,7 @@ window.__ModuleLoader__.load({
     }
 
     const panelTabs = ['dispatch', 'channel', 'claude', 'projects']
+    // 面板统一管理页签、调度快照和标题区操作。
     function Panel({ t, loadList, loadDetail, openDetails, loadChannel, saveChannel, loadClaude, saveClaude, projectApi }) {
       const [tab, setTab] = useState('dispatch')
       const tabs = useRef({})
@@ -651,11 +660,10 @@ window.__ModuleLoader__.load({
         state.status === 'unconfigured' ? 'unconfigured' : state.items.length ? 'ready' : 'empty'
       const taskList = h('section', { className: 'feishu-development-tasks', 'aria-labelledby': `${id}-tasks` },
         h('div', { className: 'feishu-development-heading' },
-          h('h2', { id: `${id}-tasks` }, t('list')),
-          h('button', { className: 'feishu-development-button feishu-development-button-primary feishu-development-button-icon', type: 'button', onClick: () => setRefresh(value => value + 1) }, h(RefreshIcon), t('refresh'))),
+          h('h2', { id: `${id}-tasks` }, t('list'))),
         state.loading && h('p', { role: 'status' }, t('loading')),
         state.error && h('p', { role: 'alert' }, t(state.items.length ? 'stale' : 'error')),
-        !state.loading && !state.error && !state.items.length && h('div', null,
+        !state.loading && !state.error && !state.items.length && h('div', { className: 'feishu-development-empty' },
           h('p', null, t('empty')), h('p', { className: 'feishu-development-meta' }, t(state.status === 'unconfigured' ? 'unconfigured' : 'send'))),
         h('ul', { className: 'feishu-development-list feishu-development-task-list' }, state.items.map(item =>
           h('li', { key: item.id }, h('button', {
@@ -679,10 +687,13 @@ window.__ModuleLoader__.load({
                 h('p', { className: 'feishu-development-eyebrow' }, t('eyebrow')),
                 h('h1', { id: `${id}-title` }, t('title')),
                 h('p', { className: 'feishu-development-subtitle' }, t('subtitle')))),
-            h('button', { className: 'feishu-development-button', type: 'button', onClick: openDetails }, t('settings'))),
+            h('div', { className: 'feishu-development-hero-actions' },
+              tab === 'dispatch' && h('button', { className: 'feishu-development-button feishu-development-button-primary feishu-development-button-icon', type: 'button', onClick: () => setRefresh(value => value + 1) }, h(RefreshIcon), t('refresh')),
+              h('button', { className: 'feishu-development-button', type: 'button', onClick: openDetails }, t('settings')))),
           tab === 'dispatch' && h('div', { className: 'feishu-development-readout', 'data-result': readout, role: 'status', 'aria-live': 'polite' },
             h('strong', null, t(`status${readout[0].toUpperCase()}${readout.slice(1)}`)),
-            readout === 'ready' && h('span', null, `${state.items.length} ${t('statusCount')}`)),
+            ['ready', 'empty', 'stale'].includes(readout) && h('span', { className: 'feishu-development-readout-count' },
+              h('strong', null, state.items.length), ` ${t('statusCount')}`)),
           h('div', { className: 'feishu-development-tabs', role: 'tablist', 'aria-label': t('title'), onKeyDown: handleTabKey },
             panelTabs.map(key => h('button', { key, id: `${id}-${key}-tab`, ref: element => { tabs.current[key] = element },
               type: 'button', role: 'tab', 'aria-selected': tab === key, 'aria-controls': `${id}-${key}-panel`, tabIndex: tab === key ? 0 : -1,
