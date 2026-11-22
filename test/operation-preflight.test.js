@@ -37,6 +37,18 @@ test('Host UI preflight leaves projects without an npm lockfile to their own set
   assert.deepEqual(result, { status: 'unmanaged', cached: false })
 })
 
+test('real npm ci prepares an empty isolated project without network dependencies', async t => {
+  const directory = await fixture(t)
+  const manifest = { name: 'feishu-preflight-integration', version: '1.0.0', private: true }
+  await writeFile(join(directory, 'package.json'), JSON.stringify(manifest))
+  await writeFile(join(directory, 'package-lock.json'), JSON.stringify({
+    ...manifest, lockfileVersion: 3, requires: true,
+    packages: { '': { name: manifest.name, version: manifest.version } },
+  }))
+  assert.equal((await prepareOperationEnvironment({ cwd: directory })).cached, false)
+  assert.equal((await prepareOperationEnvironment({ cwd: directory })).cached, true)
+})
+
 test('failed dependency installation is not cached and can be retried', async t => {
   const directory = await fixture(t)
   await assert.rejects(prepareOperationEnvironment({ cwd: directory,
