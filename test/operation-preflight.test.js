@@ -20,10 +20,10 @@ test('Host UI preflight installs once and invalidates the environment when the l
     calls.push(args)
     await mkdir(join(cwd, 'node_modules'), { recursive: true })
   }
-  assert.deepEqual(await prepareOperationEnvironment({ cwd: directory, install }), { status: 'ready', cached: false })
-  assert.deepEqual(await prepareOperationEnvironment({ cwd: directory, install }), { status: 'ready', cached: true })
+  assert.deepEqual(await prepareOperationEnvironment({ cwd: directory, install, check: async () => {} }), { status: 'ready', cached: false })
+  assert.deepEqual(await prepareOperationEnvironment({ cwd: directory, install, check: async () => {} }), { status: 'ready', cached: true })
   assert.equal(calls.length, 1)
-  assert.deepEqual(calls[0], ['ci', '--ignore-scripts', '--no-audit', '--no-fund'])
+  assert.deepEqual(calls[0], ['ci', '--no-audit', '--no-fund'])
   const marker = JSON.parse(await readFile(join(directory, 'node_modules', '.feishu-operation-preflight.json'), 'utf8'))
   assert.match(marker.fingerprint, /^[a-f0-9]{64}$/)
   await writeFile(join(directory, 'package-lock.json'), '{"lockfileVersion":3,"changed":true}\n')
@@ -47,6 +47,30 @@ test('real npm ci prepares an empty isolated project without network dependencie
   }))
   assert.equal((await prepareOperationEnvironment({ cwd: directory })).cached, false)
   assert.equal((await prepareOperationEnvironment({ cwd: directory })).cached, true)
+})
+
+test('a damaged dependency cache is checked and reinstalled', async t => {
+  const directory = await fixture(t)
+  let healthy = true
+  let installs = 0
+  let checks = 0
+  const install = async (args, { cwd }) => {
+    installs++
+    await mkdir(join(cwd, 'node_modules'), { recursive: true })
+  }
+  const check = async () => {
+    checks++
+    if (!healthy) throw Object.assign(new Error('missing dependency'), { code: 1 })
+  }
+  const input = { cwd: directory, install, check }
+  assert.equal((await prepareOperationEnvironment(input)).cached, false)
+  assert.equal((await prepareOperationEnvironment(input)).cached, true)
+  healthy = false
+  assert.equal((await prepareOperationEnvironment(input)).cached, false)
+  healthy = true
+  assert.equal((await prepareOperationEnvironment(input)).cached, true)
+  assert.equal(installs, 2)
+  assert.equal(checks, 3)
 })
 
 test('failed dependency installation is not cached and can be retried', async t => {

@@ -62,6 +62,9 @@ test('Harness adapter gates unverified policy, creates and resumes a task parent
     assert.match(text, /完成本地提交后交给插件执行审查、验证和自动推送，本次委派止于本地提交/)
     assert.match(text, /配置的检查、所需运行证据和人工审批都通过后，插件推送同名任务分支/)
     assert.match(text, /删除文件：repo\/relative\.txt/)
+    assert.match(text, /不得用 --allow-empty 或空提交触发验证/)
+    assert.match(text, /不要为了开发阶段的实测启动额外 DSH Desktop 实例/)
+    assert.match(text, /缺少 UI 实测环境不等于开发实现失败/)
     assert.match(text, /缺陷修复需要证明基线可复现且修复后回归检查通过/)
     return startActivation(options)
   }
@@ -164,6 +167,7 @@ test('operation evidence comes from completed tool output on the verification tu
     const [{ text }] = options.prompt
     assert.match(text, /Host 已对存在 package-lock.json 的 Node 项目完成依赖预检/)
     assert.match(text, /不要重复执行 npm ci/)
+    assert.match(text, /一次确认隔离实例因登录或权限条件无法进入应用后/)
     return startActivation(options)
   }
   const runner = createHarness(ctx, { developmentProvider: 'codex', providerPoliciesVerified: true })
@@ -195,7 +199,7 @@ test('verification resumes only the remaining steps after Host preflight', async
     assert.equal(prepared, true)
     const [{ text }] = options.prompt
     assert.match(text, /"completedSteps":\[1\]/)
-    assert.match(text, /不要重复执行或输出其证据/)
+    assert.match(text, /幂等重建前置状态/)
     return startActivation(options)
   }
   const statuses = []
@@ -257,6 +261,47 @@ test('Claude development evidence accepts command results but not file contents'
   assert.equal(result.operationEvidence.assertions.length, 1)
   assert.equal(result.operationEvidence.assertions[0].id, 'shell')
 })
+test('verification has a total deadline and still releases resources', async () => {
+  const { ctx, input, seen } = fixture()
+  const { started } = liveProvider(ctx, ['claude', '--output-format', 'stream-json', '--input-format', 'stream-json'])
+  const startActivation = ctx.subagents.startActivation
+  ctx.subagents.startActivation = async options => ({
+    ...await startActivation(options),
+    async dispose() { seen.push('close child') },
+  })
+  const runner = createHarness(ctx, { developmentProvider: 'claude', providerPoliciesVerified: true }, {
+    prepareOperation: async () => {}, verificationTimeoutMs: 30, verificationIdleTimeoutMs: 5000,
+  })
+  const pending = runner.verifyOperation({ ...input, commit: 'commit', validation })
+  await started
+  await assert.rejects(pending, /超过时间上限/)
+  assert.deepEqual(seen.slice(-3), ['close child', 'drain', 'close parent'])
+})
+
+test('verification stops after protocol activity stays idle', async () => {
+  const { ctx, input } = fixture()
+  const { stdout, started } = liveProvider(ctx, ['claude', '--output-format', 'stream-json', '--input-format', 'stream-json'])
+  const runner = createHarness(ctx, { developmentProvider: 'claude', providerPoliciesVerified: true }, {
+    prepareOperation: async () => {}, verificationTimeoutMs: 5000, verificationIdleTimeoutMs: 30,
+  })
+  const pending = runner.verifyOperation({ ...input, commit: 'commit', validation })
+  await started
+  write(stdout, { type: 'stream_event', parent_tool_use_id: null, event: { type: 'message_start', message: { id: 'message' } } })
+  await assert.rejects(pending, /长时间没有进展/)
+})
+
+test('activation cleanup cannot keep a completed delegation pending forever', async () => {
+  const { ctx, input, seen } = fixture()
+  ctx.subagents.startActivation = async () => ({
+    childId: 'child',
+    result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: JSON.stringify(plan) }] }),
+    async dispose() { seen.push('close child'); await new Promise(() => {}) },
+  })
+  const runner = createHarness(ctx, { designProvider: 'read-only', providerPoliciesVerified: true }, { cleanupTimeoutMs: 30 })
+  await assert.rejects(runner.design(input), /资源清理超时/)
+  assert.deepEqual(seen.slice(-2), ['drain', 'close parent'])
+})
+
 test('cancellation detaches the observer and keeps the terminal cancellation behavior', async () => {
   const { ctx, input } = fixture()
   const { stdout, terminal, started } = liveProvider(ctx, ['claude', '--output-format', 'stream-json', '--input-format', 'stream-json'])

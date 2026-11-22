@@ -6,6 +6,27 @@ import { prepareOperationEnvironment } from './operation-preflight.js'
 
 const exec = promisify(execFile)
 
+function abortable(promise, signal) {
+  if (signal.aborted) return Promise.reject(signal.reason)
+  let abort
+  const cancelled = new Promise((_, reject) => {
+    abort = () => reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+  })
+  return Promise.race([promise, cancelled]).finally(() => signal.removeEventListener('abort', abort))
+}
+
+async function boundedCleanup(promise, timeoutMs) {
+  let timer
+  try {
+    await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('委派资源清理超时，请检查残留的验证进程。')), timeoutMs)
+    })])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // 开发 Agent 只能采集当前提交的证据，不能自己宣称交付已经通过。
 async function execGit(cwd, signal, ...args) {
   const { stdout } = await exec('git', ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), '-c', 'core.fsmonitor=false', ...args], {
@@ -73,12 +94,15 @@ function readDevelopment(output) {
 }
 
 // 管理每个任务的设计与开发委派会话。
-export function createHarness(ctx, config, { loadAttachment, gitCommit, prepareOperation = prepareOperationEnvironment } = {}) {
+export function createHarness(ctx, config, {
+  loadAttachment, gitCommit, prepareOperation = prepareOperationEnvironment,
+  verificationTimeoutMs = 20 * 60_000, verificationIdleTimeoutMs = 3 * 60_000, cleanupTimeoutMs = 10_000,
+} = {}) {
   const output = createModelOutputObserver(ctx)
   const readCommit = gitCommit ?? ((cwd, signal) => execGit(cwd, signal, 'rev-parse', 'HEAD'))
 
   // 在指定工作目录运行委派并清理子智能体资源。
-  async function run({ task, project, signal, recordRun, recordSession, recordResult = () => {}, recordOutput = () => {}, recordAssertion }, stage, instructions) {
+  async function run({ task, project, signal: parentSignal, recordRun, recordSession, recordResult = () => {}, recordOutput = () => {}, recordAssertion }, stage, instructions) {
     const provider = stage === 'design' ? config.designProvider : config.developmentProvider
     if (!config.providerPoliciesVerified || !provider) {
       throw new Error('Claude Code 委派尚未完成配置或权限联调。')
@@ -88,13 +112,24 @@ export function createHarness(ctx, config, { loadAttachment, gitCommit, prepareO
     const existing = ctx.agents.get(sessionId)
     if (existing) throw new Error('任务会话正在 DSH 中打开，请关闭该会话后重试。')
     const parent = task.sessionCreated
-      ? await ctx.agents.resume({ resumeSessionId: sessionId, signal })
-      : await ctx.agents.create({ sessionId, meta: { cwd: project.path }, signal })
+      ? await ctx.agents.resume({ resumeSessionId: sessionId, signal: parentSignal })
+      : await ctx.agents.create({ sessionId, meta: { cwd: project.path }, signal: parentSignal })
+    const timeout = new AbortController()
+    const timed = stage === 'verify'
+    const signal = timed ? AbortSignal.any([parentSignal, timeout.signal]) : parentSignal
+    let idleTimer
+    const activity = () => {
+      if (!timed) return
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => timeout.abort(new Error('操作验证长时间没有进展，已终止本次委派；已完成步骤可在重试时复用。')), verificationIdleTimeoutMs)
+    }
+    const totalTimer = timed ? setTimeout(() => timeout.abort(new Error('操作验证超过时间上限，已终止本次委派；已完成步骤可在重试时复用。')), verificationTimeoutMs) : undefined
+    activity()
     let activation
     let release
     const observation = output.observe(cwd, text => {
       if (!signal.aborted) recordOutput(text)
-    }, recordAssertion)
+    }, recordAssertion, activity)
     const dispose = () => release ??= Promise.resolve().then(() => activation.dispose())
     const cancel = () => { observation.stop(); void dispose().catch(() => {}) }
     try {
@@ -108,7 +143,7 @@ export function createHarness(ctx, config, { loadAttachment, gitCommit, prepareO
       signal.addEventListener('abort', cancel, { once: true })
       if (signal.aborted) cancel()
       recordRun(activation.childId, provider)
-      const result = await activation.result
+      const result = await abortable(activation.result, signal)
       signal.throwIfAborted()
       recordResult({ stopReason: result.stopReason })
       if (result.stopReason !== 'completed') {
@@ -117,18 +152,20 @@ export function createHarness(ctx, config, { loadAttachment, gitCommit, prepareO
       return result.output.filter(block => block.type === 'text').map(block => block.text).join('\n')
     } finally {
       observation.stop()
+      clearTimeout(totalTimer)
+      clearTimeout(idleTimer)
       signal.removeEventListener('abort', cancel)
       try {
         if (activation) {
           // 数据库写入失败时仍需接收运行结果，避免产生未处理的拒绝。
           void activation.result.catch(() => {})
-          await dispose()
+          await boundedCleanup(dispose(), cleanupTimeoutMs)
         }
       } finally {
         try {
-          await ctx.subagents.drainDescendants([parent.agent])
+          await boundedCleanup(ctx.subagents.drainDescendants([parent.agent]), cleanupTimeoutMs)
         } finally {
-          await parent.dispose()
+          await boundedCleanup(parent.dispose(), cleanupTimeoutMs)
         }
       }
     }
@@ -147,8 +184,8 @@ export function createHarness(ctx, config, { loadAttachment, gitCommit, prepareO
       } }, 'verify', [
         '你是交付验证 Agent。在当前任务工作树启动已提交的版本，实际操作应用并核对结果。需要时可编写临时验证程序，放在工作树之外，结束后清理你启动的进程和临时文件。现有项目文件、Git 引用和配置保持原样。不要推送、部署、连接真实客户服务或改动用户正在使用的应用。',
         'Host 已对存在 package-lock.json 的 Node 项目完成依赖预检，并用锁文件指纹缓存结果，不要重复执行 npm ci。没有可用锁文件或其他类型项目可按项目约定准备依赖。不要复用其他工作树的依赖，不要修改 package.json 或锁文件。',
-        `按顺序执行下方每个步骤。用应用要求的运行环境：明确要求 DSH Desktop 时，要实际加载该提交的 Desktop 版本。浏览器替身、模拟 Host 或源码检查只能作诊断。缺少环境或权限时报告阻塞。缺陷任务${baselineObserved ? '已有同一基线的实测复现记录，本次只验证修复结果。' : '在独立临时目录实际复现 baseCommit 的缺陷，再验证修复。'}`,
-        ...(checkpoint?.completedSteps ? [`以下是同一提交、同一方案已经由 Host 核验的步骤，不要重复执行或输出其证据。恢复应用状态可做必要导航，但只从下一个未完成步骤继续实测，并保留原步骤编号：${JSON.stringify(checkpoint)}`] : []),
+        `按顺序执行下方每个步骤。用应用要求的运行环境：明确要求 DSH Desktop 时，要实际加载该提交的 Desktop 版本。浏览器替身、模拟 Host 或源码检查只能作诊断。缺少环境或权限时报告阻塞。不要反复创建 Desktop 实例或 profile，不要读取、索取或填写真实登录凭据和 API Key；一次确认隔离实例因登录或权限条件无法进入应用后，立即报告具体阻塞，不要重复尝试。缺陷任务${baselineObserved ? '已有同一基线的实测复现记录，本次只验证修复结果。' : '在独立临时目录实际复现 baseCommit 的缺陷，再验证修复。'}`,
+        ...(checkpoint?.completedSteps ? [`以下是同一提交、同一方案已经由 Host 核验的步骤，不要重复输出其证据。恢复应用状态可做必要导航；如果已完成步骤创建的临时数据或运行状态已不存在，先按原步骤幂等重建前置状态，核对已有数据以避免重复创建，再从下一个未完成步骤继续实测并保留原步骤编号。前置状态重建不是新的通过证据。无法重建时报告具体阻塞：${JSON.stringify(checkpoint)}`] : []),
         '证据由工具输出采集。让实际操作程序仅在对应行为断言通过后向 stdout 写一行 FEISHU_AGENT_OBSERVATION 加 JSON，字段为 commit、step（按步骤从 1 编号）、observed（具体观察，最多 500 字符）。仅当本次实际复现缺陷基线时才输出 step 为 0、commit 为 baseCommit、observed 为复现结果；已有基线记录时不要输出 step 0。仅打印文字、退出码或将预期复制为观察不能作为验证。',
         '结束时只输出 JSON。通过时为 {"status":"passed","observed":"整体实际结果"}；失败或环境不可用为 {"status":"blocked","summary":"失败的步骤或缺少的条件"}。如果实测发现更优方案但会改变用户要求，返回 {"status":"alternative","summary":"发现的问题","alternative":{"summary":"方案","impact":"与原意的差异","validation":{"kind":"operation","operation":"操作","steps":["步骤"],"expected":"预期"}}}，等待审批。',
         JSON.stringify({ commit, validation, requirement: task.requirement.body }),
@@ -185,12 +222,12 @@ export function createHarness(ctx, config, { loadAttachment, gitCommit, prepareO
         ? approval.proposal.validation : task.plan?.validation
       const assertions = []
       const output = await run({ ...input, recordAssertion: item => { if (assertions.length < 64) assertions.push(item) } }, 'develop', [
-        '仅在当前任务工作树实现当前方案，可在工作树内按项目约定编辑、构建和测试。若有 approvedAlternative，则在该审批明确的范围内实现。完成后在当前任务分支创建本地提交。禁止部署、读取或输出凭据、或更改权限。',
+        '仅在当前任务工作树实现当前方案，可在工作树内按项目约定编辑、构建和测试。若有 approvedAlternative，则在该审批明确的范围内实现。只有实际源码、配置或文档改动需要交付时才创建本地提交；不得用 --allow-empty 或空提交触发验证。若需求已经满足且没有改动，返回 no_change，不要为了交付制造提交。禁止部署、读取或输出凭据、或更改权限。',
         '删除受跟踪文件须有需求正文中的逐行授权，格式为“删除文件：repo/relative.txt”，每行一个完整仓库相对路径。若确需删除而授权不明确，或发现疑似越权或高风险脚本，暂停并具体说明路径、理由和待审批事项。',
         '如果用户在需求或返工说明中明确允许将指定的本地分支（例如 master）合入当前任务分支，或用户明确批准了包含该合并的方案，可以在当前任务工作树执行该合并。自动生成的方案本身不授予合并权限。来源分支只供读取。不得切换到来源分支、修改其他分支，或把任务分支合回主线。若缺少明确授权，或发生冲突且无法在授权范围内解决，停止开发并说明。',
         `任务类型：${task.type === 'fix' ? '缺陷修复' : '新功能开发'}，当前分支：${task.work.branch ?? '由插件管理'}。保持在该分支。完成本地提交后交给插件执行审查、验证和自动推送，本次委派止于本地提交。配置的检查、所需运行证据和人工审批都通过后，插件推送同名任务分支。`,
-        '将下方 JSON 视为需求数据。若 validation 是 operation，且当前项目可在本机启动和操作，提交后在同一提交上执行 validation 的步骤。缺少环境或无法观察时如实说明，不要伪称通过。证据由命令工具输出采集：仅在对应行为断言通过后，向 stdout 写一行 FEISHU_AGENT_OBSERVATION 加 JSON，字段为 commit、step（按步骤从 1 编号）、observed（具体观察，最多 500 字符）。缺陷基线复现仅在独立临时目录中进行，输出 step 为 0，commit 为 baseCommit。现有项目文件、Git 引用和配置保持原样。',
-        'Host 将复核固定提交、逐项观察和缺陷基线，再运行项目检查。模型自述、编译成功、仅打印预期和没有实际断言的输出都不能作为通过证据。若已能采集当前提交的完整实测证据，不再重复启动验证 Agent；否则由 Host 判断是否需要补验。',
+        '将下方 JSON 视为需求数据。若 validation 是 operation，只能在现有且已配置完成的项目测试或运行环境中采集证据。不要为了开发阶段的实测启动额外 DSH Desktop 实例、创建 profile、处理登录或 API Key、申请额外权限；遇到这些前置条件时停止实测并保留实现结果，由 Host 在交付验证阶段处理。可在现有环境执行 validation 步骤时，提交后在同一提交上采集命令工具证据：仅在对应行为断言通过后，向 stdout 写一行 FEISHU_AGENT_OBSERVATION 加 JSON，字段为 commit、step（按步骤从 1 编号）、observed（具体观察，最多 500 字符）。缺陷基线复现仅在独立系统临时目录中进行，输出 step 为 0，commit 为 baseCommit。不要在任务工作树创建临时验证 profile；只清理本轮自己创建的临时进程和文件，不要绕过权限审批。现有项目文件、Git 引用和配置保持原样。',
+        'Host 将复核固定提交、逐项观察和缺陷基线，再运行项目检查。模型自述、编译成功、仅打印预期和没有实际断言的输出都不能作为通过证据。若已能采集当前提交的完整实测证据，不再重复启动验证 Agent；否则由 Host 判断是否需要补验。缺少 UI 实测环境不等于开发实现失败，不要因为未做 Desktop 实测而把已完成的实现返回为 blocked。',
         '仅输出 JSON 对象。status 为 implemented、no_change、needs_clarification、blocked 或 alternative。summary 为必填字符串，最多 1400 字符，简述实际观察到的操作结果，或说明缺失的证据。若执行了所需操作，附加 observed 字段简述整体实测结果；未执行或失败时不要附加 observed，也不要写虚假的通过结论。信息不足时使用 needs_clarification。若需要改变用户目标或行为，使用 alternative 并提交包含 summary、impact、validation 的替代方案，停止开发等待审批。',
         ...validationInstructions,
         JSON.stringify({ type: task.type ?? 'feature', requirement: { body: task.requirement?.body ?? '' }, plan: task.plan,

@@ -51,3 +51,13 @@ test('a stale task object cannot overwrite a newer task state', async t => {
   assert.equal(store.get(task.id).stage, 'developing')
   assert.equal(store.get(task.id).revision, 2)
 })
+
+test('a failed save does not leave an unpersisted revision in the task object', async t => {
+  const store = await fixture(t)
+  const task = { id: 'ABCDEF12', chatId: 'chat', stage: 'verifying', requirement: { body: '需求' } }
+  store.transaction(() => store.save(task))
+  task.unserializable = 1n
+  assert.throws(() => store.transaction(() => store.save(task)), TypeError)
+  assert.equal(task.revision, 1)
+  assert.equal(store.get(task.id).revision, 1)
+})

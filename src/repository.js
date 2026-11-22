@@ -142,8 +142,14 @@ export function createRepository(worktreeRoot) {
     const operationReports = []
     const result = { worktree, branch, changes, commit, checks, operationReports }
     const cleanCheck = { label: requireNewCommit ? '检查本轮返工提交与工作树' : '检查本地提交与工作树', passed: false }
-    if (status || commit === base || (requireNewCommit && commit === previousCommit)) {
-      cleanCheck.output = status ? '工作树还有未提交的改动。' : requireNewCommit ? '本轮返工没有产生新提交。' : '分支没有新增提交。'
+    const noNewCommit = commit === base || (requireNewCommit && commit === previousCommit)
+    const delta = requireNewCommit && !noNewCommit
+      ? await git(worktree, signal, 'diff', '--no-ext-diff', '--no-textconv', '--stat', previousCommit, commit, '--')
+      : committed
+    if (status || noNewCommit || !delta.trim()) {
+      cleanCheck.output = status ? '工作树还有未提交的改动。' : noNewCommit
+        ? requireNewCommit ? '本轮返工没有产生新提交。' : '分支没有新增提交。'
+        : '提交没有实际代码差异，禁止用空提交进入交付验证。'
       checks.push(cleanCheck)
       return result
     }

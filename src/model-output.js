@@ -172,7 +172,7 @@ export function createModelOutputObserver(ctx) {
             const append = text => run.active && run.append(text)
             const text = kind === 'claude' ? claudeText(append) : codexText(append)
             const assertions = run.record && observeAssertions(kind, item => run.active && run.record(item))
-            run.detach = readFrames(child.stdout, packet => { text(packet); assertions?.(packet) })
+            run.detach = readFrames(child.stdout, packet => { run.activity?.(); text(packet); assertions?.(packet) })
           }
           return child
         }
@@ -181,8 +181,8 @@ export function createModelOutputObserver(ctx) {
   })
 
   return {
-    observe(cwd, append, record) {
-      const run = { cwd, append, record, active: true }
+    observe(cwd, append, record, activity) {
+      const run = { cwd, append, record, activity, active: true }
       return {
         activate: start => current.run(run, start),
         stop() {

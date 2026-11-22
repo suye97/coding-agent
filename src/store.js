@@ -42,15 +42,18 @@ export function openStore(path) {
     const currentRevision = persisted?.revision ?? 0
     if ((task.revision ?? 0) !== currentRevision) throw new Error('任务状态已被其他操作更新，请基于最新状态重试。')
     const latest = db.prepare('SELECT MAX(revision) AS revision FROM history WHERE task = ?').get(task.id)?.revision ?? 0
-    task.revision = Math.max(currentRevision, latest) + 1
-    task.recordedAt = Date.now()
-    const body = JSON.stringify(task)
+    const revision = Math.max(currentRevision, latest) + 1
+    const recordedAt = Date.now()
+    const body = JSON.stringify({ ...task, revision, recordedAt })
     db.prepare(`INSERT INTO tasks VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET stage=excluded.stage, body=excluded.body`)
       .run(task.id, task.chatId, task.stage, body)
-    db.prepare('INSERT INTO history VALUES (?, ?, ?)').run(task.id, task.revision, body)
+    db.prepare('INSERT INTO history VALUES (?, ?, ?)').run(task.id, revision, body)
     // Keep the identity of an outstanding send across superseding revisions and retries.
     db.prepare(`INSERT INTO outbox (id, task, due) VALUES (?, ?, ?) ON CONFLICT(task) DO NOTHING`)
       .run(randomUUID(), task.id, Date.now())
+    // SQL 全部成功后再修改调用方对象，避免事务回滚留下未持久化的修订号。
+    task.revision = revision
+    task.recordedAt = recordedAt
   }
 
   function progress(task) {
