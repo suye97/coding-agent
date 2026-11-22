@@ -162,9 +162,8 @@ test('operation evidence comes from completed tool output on the verification tu
   const startActivation = ctx.subagents.startActivation
   ctx.subagents.startActivation = options => {
     const [{ text }] = options.prompt
-    assert.match(text, /Git worktree 不包含 node_modules/)
-    assert.match(text, /npm ci --ignore-scripts --no-audit --no-fund/)
-    assert.match(text, /缺少依赖属于待准备的环境条件/)
+    assert.match(text, /Host 已对存在 package-lock.json 的 Node 项目完成依赖预检/)
+    assert.match(text, /不要重复执行 npm ci/)
     return startActivation(options)
   }
   const runner = createHarness(ctx, { developmentProvider: 'codex', providerPoliciesVerified: true })
@@ -185,6 +184,40 @@ test('operation evidence comes from completed tool output on the verification tu
   assert.equal(result.assertions[0].id, 'real-tool')
   assert.equal(result.assertions[0].line, line)
   assert.match(result.assertions[0].sha256, /^[a-f0-9]{64}$/)
+})
+
+test('verification resumes only the remaining steps after Host preflight', async () => {
+  const { ctx, input } = fixture()
+  const { stdout, terminal, started } = liveProvider(ctx, ['node', 'codex.js', 'app-server', '--stdio'])
+  const startActivation = ctx.subagents.startActivation
+  let prepared = false
+  ctx.subagents.startActivation = options => {
+    assert.equal(prepared, true)
+    const [{ text }] = options.prompt
+    assert.match(text, /"completedSteps":\[1\]/)
+    assert.match(text, /不要重复执行或输出其证据/)
+    return startActivation(options)
+  }
+  const statuses = []
+  const checkpoints = []
+  const runner = createHarness(ctx, { developmentProvider: 'codex', providerPoliciesVerified: true }, {
+    prepareOperation: async () => { prepared = true },
+  })
+  const scenario = { ...validation, steps: ['打开列表', '点击筛选'] }
+  const pending = runner.verifyOperation({ ...input, commit: 'commit', validation: scenario,
+    checkpoint: { completedSteps: [1] },
+    recordPreflight: status => statuses.push(status), recordCheckpoint: item => checkpoints.push(item) })
+  await started
+  const line = JSON.stringify({ commit: 'commit', step: 2, observed: '筛选结果正确' })
+  write(stdout, { method: 'turn/started', params: { threadId: 'thread', turnId: 'turn', turn: { id: 'turn' } } })
+  write(stdout, { method: 'item/completed', params: { threadId: 'thread', turnId: 'turn', item: {
+    id: 'tool-2', type: 'commandExecution', status: 'completed', exitCode: 0, aggregatedOutput: `FEISHU_AGENT_OBSERVATION ${line}`,
+  } } })
+  terminal.resolve({ stopReason: 'completed', output: [{ type: 'text', text: '{"status":"passed","observed":"筛选通过"}' }] })
+  const result = await pending
+  assert.deepEqual(statuses, ['checking', 'ready'])
+  assert.equal(checkpoints.length, 1)
+  assert.equal(result.assertions[0].id, 'tool-2')
 })
 
 test('development captures current-commit operation evidence without creating another session', async () => {

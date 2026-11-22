@@ -50,34 +50,60 @@ function observedOperation(validation, reports, task) {
   return evidence
 }
 
-function agentOperationEvidence(validation, report, commit, attempt, baseline) {
-  const { observed, assertions } = report
+function agentObservationProgress(validation, assertions, commit, baseline) {
   const firstStep = validation.type === 'fix' && !baseline ? 0 : 1
   const observations = []
-  if (!observation(observed) || !attempt?.childId || !Array.isArray(assertions)) {
-    throw new Error('验证 Agent 缺少实际操作工具记录。')
-  }
-  for (const assertion of assertions) {
+  const accepted = []
+  for (const assertion of assertions ?? []) {
     let record
     try { record = JSON.parse(assertion.line) } catch { continue }
     const step = firstStep + observations.length
     if (step > validation.steps.length || record?.step !== step ||
         record.commit !== (step === 0 ? validation.baseCommit : commit) || !observation(record.observed) ||
         typeof assertion.id !== 'string' || !/^[a-f0-9]{64}$/u.test(assertion.sha256)) continue
+    accepted.push(assertion)
     observations.push({ observed: record.observed.trim(), toolId: assertion.id, outputSha256: assertion.sha256 })
   }
-  if (observations.length !== validation.steps.length + (firstStep === 0 ? 1 : 0)) {
+  const baselineObservation = firstStep === 0 ? observations[0] : baseline
+  const steps = firstStep === 0 ? observations.slice(1) : observations
+  return { accepted, observations, steps, baselineObservation }
+}
+
+function agentOperationEvidence(validation, report, commit, attempt, baseline) {
+  const { observed, assertions } = report
+  if (!observation(observed) || !attempt?.childId || !Array.isArray(assertions)) {
+    throw new Error('验证 Agent 缺少实际操作工具记录。')
+  }
+  const { observations, steps, baselineObservation } = agentObservationProgress(validation, assertions, commit, baseline)
+  const needsBaseline = validation.type === 'fix' && !baseline
+  if (observations.length !== validation.steps.length + (needsBaseline ? 1 : 0)) {
     throw new Error('验证 Agent 缺少与待验提交匹配的逐步工具记录，或缺少基线复现。')
   }
-  const baselineObservation = firstStep === 0 ? observations.shift() : baseline
   if (baselineObservation?.observed === observed.trim()) throw new Error('缺陷复现与修复结果相同。')
   return {
     kind: 'operation', source: 'agent', commit, childId: attempt.childId, provider: attempt.provider,
     operation: validation.operation, expected: validation.expected, observed: observed.trim(),
-    steps: validation.steps.map((action, index) => ({ action, ...observations[index] })),
+    steps: validation.steps.map((action, index) => ({ action, ...steps[index] })),
     ...(baselineObservation && { baseline: baselineObservation.observed,
       ...(baselineObservation.toolId && { baselineTool: baselineObservation }) }),
   }
+}
+
+function resumeCheckpoint(task, validation, commit, baseline) {
+  const saved = task.operationCheckpoint
+  const matches = saved?.commit === commit && saved.operation === validation.operation &&
+    saved.expected === validation.expected && saved.baseCommit === validation.baseCommit &&
+    saved.requirementVersion === task.requirementVersion && saved.planVersion === task.planVersion &&
+    JSON.stringify(saved.steps) === JSON.stringify(validation.steps)
+  const checkpoint = {
+    commit, operation: validation.operation, expected: validation.expected, steps: validation.steps,
+    baseCommit: validation.baseCommit, requirementVersion: task.requirementVersion, planVersion: task.planVersion,
+    assertions: matches && Array.isArray(saved.assertions) ? saved.assertions.slice(0, 64) : [],
+    preflight: matches ? saved.preflight : undefined,
+  }
+  const progress = agentObservationProgress(validation, checkpoint.assertions, commit, baseline)
+  checkpoint.assertions = progress.accepted
+  return { checkpoint, progress }
 }
 
 const titles = {
@@ -172,6 +198,11 @@ function render(task, project) {
   if (plan && ['queued', 'developing', 'verify_queued', 'verifying'].includes(stage)) {
     lines.push(`需求 v${task.requirementVersion} / 方案 v${task.planVersion}`, `方案\n${plan.summary}`,
       `影响范围\n${plan.scope}`, `风险与待澄清事项\n${plan.risks}`, `验证计划\n${plan.verification}`)
+  }
+  const checkpoint = task.operationCheckpoint
+  if (checkpoint && (stage === 'verifying' || (stage === 'blocked' && task.failedStage === 'verifying'))) {
+    const environment = checkpoint.preflight === 'ready' ? '环境已就绪' : '正在检查环境'
+    lines.push(`UI 验证 ${environment} · 已完成 ${checkpoint.completedSteps?.length ?? 0}/${checkpoint.steps.length} 步${checkpoint.baselineReproduced ? ' · 基线已复现' : ''}`)
   }
   if (acceptsImage(task)) lines.push(`可回复此卡片发送原型图或截图。已附 ${task.attachments?.length ?? 0}/8 张。`)
   if (stage === 'manual_review' && task.manualReview?.kind === 'alternative') {
@@ -569,6 +600,24 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
           if (candidate && (candidate.source !== 'development' || developmentEvidence)) {
             task.operationEvidence = developmentEvidence ?? candidate
           } else {
+            let { checkpoint, progress } = resumeCheckpoint(task, operationValidation, result.commit, baseline)
+            let checkpointError
+            const saveCheckpoint = () => {
+              task.operationCheckpoint = checkpoint
+              try { persist('verifying') } catch (error) { checkpointError ??= error }
+            }
+            const recordPreflight = status => {
+              checkpoint.preflight = status
+              saveCheckpoint()
+            }
+            const recordCheckpoint = assertion => {
+              const next = agentObservationProgress(operationValidation, [...checkpoint.assertions, assertion], result.commit, baseline)
+              if (next.accepted.length === checkpoint.assertions.length) return
+              checkpoint.assertions = next.accepted
+              checkpoint.completedSteps = next.steps.map((_, index) => index + 1)
+              checkpoint.baselineReproduced = next.observations.length > next.steps.length
+              saveCheckpoint()
+            }
             if (task.attempt.kind !== 'verifying') {
               flushOutput()
               task.attempt = { id: randomUUID(), kind: 'verifying', startedAt: Date.now(), status: 'running' }
@@ -578,17 +627,25 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
               truncated = false
             }
             const evidence = await runner.verifyOperation({ task, project, signal, recordRun, recordSession, recordResult, recordOutput,
-              validation: operationValidation, commit: result.commit, baselineObserved: Boolean(baseline) })
+              validation: operationValidation, commit: result.commit,
+              baselineObserved: Boolean(baseline) || progress.observations.length > progress.steps.length,
+              ...(progress.steps.length && { checkpoint: { completedSteps: progress.steps.map((_, index) => index + 1) } }),
+              recordCheckpoint, recordPreflight })
+            if (checkpointError) throw checkpointError
             if (evidence.alternative) {
+              delete task.operationCheckpoint
               task.manualReview = { kind: 'alternative', proposal: evidence.alternative, sourceStage: task.stage }
               persist('manual_review')
               return
             }
-            task.operationEvidence = agentOperationEvidence(operationValidation, evidence, result.commit, task.attempt, baseline)
+            task.operationEvidence = agentOperationEvidence(operationValidation,
+              { ...evidence, assertions: [...checkpoint.assertions, ...evidence.assertions] }, result.commit, task.attempt, baseline)
+            delete task.operationCheckpoint
             persist('verifying')
           }
         }
         result.operationEvidence = task.operationEvidence
+        delete task.operationCheckpoint
         persist('verifying')
       }
       const pushed = await repository.push({ task, project, signal, result })

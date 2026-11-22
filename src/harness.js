@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createModelOutputObserver } from './model-output.js'
 import { composeImagePrompt } from './attachment-prompt.js'
+import { prepareOperationEnvironment } from './operation-preflight.js'
 
 const exec = promisify(execFile)
 
@@ -72,7 +73,7 @@ function readDevelopment(output) {
 }
 
 // 管理每个任务的设计与开发委派会话。
-export function createHarness(ctx, config, { loadAttachment, gitCommit } = {}) {
+export function createHarness(ctx, config, { loadAttachment, gitCommit, prepareOperation = prepareOperationEnvironment } = {}) {
   const output = createModelOutputObserver(ctx)
   const readCommit = gitCommit ?? ((cwd, signal) => execGit(cwd, signal, 'rev-parse', 'HEAD'))
 
@@ -136,13 +137,18 @@ export function createHarness(ctx, config, { loadAttachment, gitCommit } = {}) {
   return {
     async verifyOperation(input) {
       const assertions = []
-      const { task, commit, validation, baselineObserved } = input
+      const { task, commit, validation, baselineObserved, checkpoint, recordCheckpoint, recordPreflight } = input
+      recordPreflight?.('checking')
+      await prepareOperation({ cwd: task.work.worktree, signal: input.signal })
+      recordPreflight?.('ready')
       const output = await run({ ...input, recordAssertion: item => {
         if (assertions.length < 64) assertions.push(item)
+        recordCheckpoint?.(item)
       } }, 'verify', [
         '你是交付验证 Agent。在当前任务工作树启动已提交的版本，实际操作应用并核对结果。需要时可编写临时验证程序，放在工作树之外，结束后清理你启动的进程和临时文件。现有项目文件、Git 引用和配置保持原样。不要推送、部署、连接真实客户服务或改动用户正在使用的应用。',
-        '先准备待验工作树的运行依赖，再启动应用。Git worktree 不包含 node_modules 等被忽略的依赖目录，DSH 从目录添加插件也不会自动安装依赖。Node 项目存在 package-lock.json 时先执行 npm ci --ignore-scripts --no-audit --no-fund；其他项目按锁文件使用等价的冻结安装。不要复用其他工作树的依赖，不要修改 package.json 或锁文件。缺少依赖属于待准备的环境条件，不能据此判定操作验证失败；安装失败时再报告具体阻塞。',
+        'Host 已对存在 package-lock.json 的 Node 项目完成依赖预检，并用锁文件指纹缓存结果，不要重复执行 npm ci。没有可用锁文件或其他类型项目可按项目约定准备依赖。不要复用其他工作树的依赖，不要修改 package.json 或锁文件。',
         `按顺序执行下方每个步骤。用应用要求的运行环境：明确要求 DSH Desktop 时，要实际加载该提交的 Desktop 版本。浏览器替身、模拟 Host 或源码检查只能作诊断。缺少环境或权限时报告阻塞。缺陷任务${baselineObserved ? '已有同一基线的实测复现记录，本次只验证修复结果。' : '在独立临时目录实际复现 baseCommit 的缺陷，再验证修复。'}`,
+        ...(checkpoint?.completedSteps ? [`以下是同一提交、同一方案已经由 Host 核验的步骤，不要重复执行或输出其证据。恢复应用状态可做必要导航，但只从下一个未完成步骤继续实测，并保留原步骤编号：${JSON.stringify(checkpoint)}`] : []),
         '证据由工具输出采集。让实际操作程序仅在对应行为断言通过后向 stdout 写一行 FEISHU_AGENT_OBSERVATION 加 JSON，字段为 commit、step（按步骤从 1 编号）、observed（具体观察，最多 500 字符）。仅当本次实际复现缺陷基线时才输出 step 为 0、commit 为 baseCommit、observed 为复现结果；已有基线记录时不要输出 step 0。仅打印文字、退出码或将预期复制为观察不能作为验证。',
         '结束时只输出 JSON。通过时为 {"status":"passed","observed":"整体实际结果"}；失败或环境不可用为 {"status":"blocked","summary":"失败的步骤或缺少的条件"}。如果实测发现更优方案但会改变用户要求，返回 {"status":"alternative","summary":"发现的问题","alternative":{"summary":"方案","impact":"与原意的差异","validation":{"kind":"operation","operation":"操作","steps":["步骤"],"expected":"预期"}}}，等待审批。',
         JSON.stringify({ commit, validation, requirement: task.requirement.body }),

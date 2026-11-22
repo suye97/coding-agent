@@ -293,6 +293,77 @@ test('development operation evidence on the same commit avoids a duplicate verif
   assert.deepEqual(app.pushes, ['abcdef'])
 })
 
+test('failed UI verification persists validated steps and resumes without repeating the baseline', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.setOperationReports(() => [])
+  const assertion = (id, commit, step, observed) => ({ id, sha256: 'e'.repeat(64),
+    line: JSON.stringify({ commit, step, observed }) })
+  let calls = 0
+  app.runner.verifyOperation = async input => {
+    calls++
+    input.recordPreflight('ready')
+    input.recordRun(`verify-${calls}`, 'workspace')
+    if (calls === 1) {
+      assert.equal(input.baselineObserved, false)
+      input.recordCheckpoint(assertion('baseline', input.validation.baseCommit, 0, '基线仍显示旧值'))
+      input.recordCheckpoint(assertion('step-1', input.commit, 1, '已打开订单'))
+      throw new Error('第 2 步点击保存失败。')
+    }
+    assert.equal(input.baselineObserved, true)
+    assert.deepEqual(input.checkpoint, { completedSteps: [1] })
+    input.recordCheckpoint(assertion('step-2', input.commit, 2, '保存后显示新值'))
+    return { observed: '修复后显示新值', assertions: [assertion('step-2', input.commit, 2, '保存后显示新值')] }
+  }
+  app.send('修复缺陷｜订单\n保存后仍显示旧值')
+  await app.work()
+  await app.work()
+  const [blocked] = app.store().inStage('blocked')
+  assert.deepEqual(blocked.operationCheckpoint.completedSteps, [1])
+  assert.equal(blocked.operationCheckpoint.baselineReproduced, true)
+  app.restart()
+  await app.publish()
+  assert.match(app.card().text, /UI 验证 环境已就绪 · 已完成 1\/2 步 · 基线已复现/)
+  assert.equal(app.action('重试'), '已记录。')
+  await app.work()
+  const [task] = app.store().inStage('review')
+  assert.equal(calls, 2)
+  assert.equal(task.operationCheckpoint, undefined)
+  assert.equal(task.result.operationEvidence.baseline, '基线仍显示旧值')
+  assert.deepEqual(task.result.operationEvidence.steps.map(step => step.toolId), ['step-1', 'step-2'])
+  assert.deepEqual(app.pushes, ['abcdef'])
+})
+
+test('UI verification checkpoints are discarded when the commit changes', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.setOperationReports(() => [])
+  const assertion = (id, commit, step) => ({ id, sha256: 'f'.repeat(64),
+    line: JSON.stringify({ commit, step, observed: `步骤 ${step} 实测` }) })
+  let calls = 0
+  app.runner.verifyOperation = async input => {
+    calls++
+    input.recordRun(`verify-${calls}`, 'workspace')
+    if (calls === 1) {
+      input.recordCheckpoint(assertion('old-step', input.commit, 1))
+      throw new Error('中断')
+    }
+    assert.equal(input.checkpoint, undefined)
+    const assertions = input.validation.steps.map((_, index) => assertion(`new-${index}`, input.commit, index + 1))
+    return { observed: '新提交实测通过', assertions }
+  }
+  app.send('开发需求｜订单\n点击保存按钮后显示已更新')
+  await app.work()
+  await app.work()
+  app.setCommit('fedcba')
+  await app.publish()
+  assert.equal(app.action('重试'), '已记录。')
+  await app.work()
+  const [task] = app.store().inStage('review')
+  assert.equal(task.result.commit, 'fedcba')
+  assert.deepEqual(task.result.operationEvidence.steps.map(step => step.toolId), ['new-0', 'new-1'])
+})
+
 test('stale or incomplete development evidence falls back to independent verification', async t => {
   const app = await fixture(t)
   app.passChecks()
