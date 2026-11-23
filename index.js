@@ -9,6 +9,7 @@ import { createFeishuChannel } from './src/feishu.js'
 import { createAttachmentStore } from './src/attachments.js'
 import { receiveTaskMessage } from './src/attachment-intake.js'
 import { createHarness } from './src/harness.js'
+import { createDesktopEnvironment } from './src/desktop-environment.js'
 import { createProjects, createRepository } from './src/repository.js'
 import { openStore } from './src/store.js'
 import { createWorkflow } from './src/workflow.js'
@@ -30,6 +31,11 @@ export const Config = Schema.object({
   developmentProvider: Schema.string().default('').description('写入范围限制在任务工作树的 Claude Code provider'),
   providerPoliciesVerified: Schema.boolean().default(false).description('只有完成 provider 的工作目录和权限联调后才开启'),
   claudeConfigDirectory: Schema.string().default('').description('包含 settings.json 的 Claude Code 配置目录绝对路径'),
+  desktopTemplateDirectory: Schema.string().default('').description('专用 Desktop 验证模板绝对路径；留空使用数据目录下的 desktop-validation/template'),
+  desktopExecutable: Schema.string().default('').description('DSH Desktop 可执行文件绝对路径；留空使用当前 Host 程序'),
+  desktopReadinessCommand: Schema.string().default('').description('检查隔离 Desktop Provider、样例库和测试仓库的固定可执行文件'),
+  desktopReadinessArgs: Schema.array(Schema.string()).default([]).description('Desktop 健康检查固定参数；路径通过环境变量传入'),
+  desktopStartupTimeoutMs: Schema.natural().min(1000).max(120000).default(60000).description('Desktop 启动与健康检查总时限'),
   projects: Schema.array(Schema.object({
     name: Schema.string().required(),
     aliases: Schema.array(Schema.string()).default([]),
@@ -58,7 +64,17 @@ export function apply(ctx, config) {
   }
   const projects = createProjects(config.projects)
   const attachmentStore = createAttachmentStore({ directory: config.dataDirectory, appId: config.appId })
-  const runner = createHarness(ctx, config, { loadAttachment: attachmentStore.load })
+  const desktopRoot = join(config.dataDirectory, 'desktop-validation')
+  const desktopEnvironment = createDesktopEnvironment({
+    root: desktopRoot,
+    templateDirectory: config.desktopTemplateDirectory || join(desktopRoot, 'template'),
+    executable: config.desktopExecutable || process.execPath,
+    readinessCommand: config.desktopReadinessCommand,
+    readinessArgs: config.desktopReadinessArgs,
+    provider: config.developmentProvider,
+    startupTimeoutMs: config.desktopStartupTimeoutMs,
+  })
+  const runner = createHarness(ctx, config, { loadAttachment: attachmentStore.load, desktopEnvironment })
   const repository = createRepository(join(config.dataDirectory, 'worktrees'))
   const report = () => console.warn('[feishu-development-agent] 飞书连接或任务处理失败，待发送卡片将重试。')
 
@@ -114,6 +130,7 @@ export function apply(ctx, config) {
         }
       } finally {
         await Promise.allSettled([worker, publisher])
+        await runner.close()
         store?.close()
       }
     }

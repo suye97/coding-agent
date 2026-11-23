@@ -31,6 +31,7 @@ window.__ModuleLoader__.load({
         refresh: '刷新', settings: '插件详情', detail: '开发过程', noHistory: '暂无阶段记录。',
         requirement: '需求正文', summary: '实现方案', scope: '影响范围', risks: '风险与待澄清事项',
         invocation: '调用详情', startedAt: '开始时间', heartbeat: '插件心跳', waitingResponse: '正在等待模型返回…',
+        operationProgress: 'UI 验证进度', environmentReady: '环境已就绪', environmentChecking: '正在检查环境', environmentCreating: '正在创建隔离环境', environmentLaunching: '正在启动隔离 Desktop', currentStep: '当前步骤', baselineReady: '基线已复现', baselineRunning: '正在复现基线', pushing: '正在推送',
         designOutput: '设计返回', developmentOutput: '开发返回', seconds: '秒',
         modelOutput: '模型输出', modelOutputTruncated: '较早的输出已省略。',
         verification: '验证计划', branch: '分支', commit: '提交', changes: '改动', checks: '验证结果',
@@ -68,6 +69,7 @@ window.__ModuleLoader__.load({
         refresh: 'Refresh', settings: 'Plugin details', detail: 'Development history', noHistory: 'No recorded stages.',
         requirement: 'Request', summary: 'Implementation plan', scope: 'Scope', risks: 'Risks and open questions',
         invocation: 'Invocation details', startedAt: 'Started at', heartbeat: 'Plugin heartbeat', waitingResponse: 'Waiting for the model to respond…',
+        operationProgress: 'UI verification progress', environmentReady: 'Environment ready', environmentChecking: 'Checking environment', environmentCreating: 'Creating isolated environment', environmentLaunching: 'Starting isolated Desktop', currentStep: 'Current step', baselineReady: 'Baseline reproduced', baselineRunning: 'Reproducing baseline', pushing: 'Pushing',
         designOutput: 'Design response', developmentOutput: 'Development response', seconds: 's',
         modelOutput: 'Model output', modelOutputTruncated: 'Earlier output was trimmed.',
         verification: 'Verification plan', branch: 'Branch', commit: 'Commit', changes: 'Changes', checks: 'Verification results',
@@ -254,6 +256,26 @@ window.__ModuleLoader__.load({
       return `${Math.max(0, Math.round((end - attempt.startedAt) / 1000))} ${t('seconds')}`
     }
 
+    function operationProgress(checkpoint, t) {
+      if (!checkpoint) return ''
+      const completed = checkpoint.completedSteps?.length ?? 0
+      const current = Math.min(completed + 1, checkpoint.steps?.length ?? 0)
+      const end = checkpoint.finishedAt ?? Date.now()
+      const seconds = typeof checkpoint.stepElapsedMs === 'number'
+        ? Math.max(0, Math.floor(checkpoint.stepElapsedMs / 1000))
+        : checkpoint.stepStartedAt ? Math.max(0, Math.floor((end - checkpoint.stepStartedAt) / 1000)) : 0
+      const environment = { ready: 'environmentReady', creating: 'environmentCreating', launching: 'environmentLaunching', checking: 'environmentChecking' }[checkpoint.preflight] ?? 'environmentChecking'
+      const phase = checkpoint.phase === 'pushing' ? t('pushing')
+        : checkpoint.phase === 'baseline' ? `${t('baselineRunning')} · ${seconds} ${t('seconds')}`
+          : completed < (checkpoint.steps?.length ?? 0) && `${t('currentStep')} ${current} · ${seconds} ${t('seconds')}`
+      return [
+        t(environment),
+        `${completed}/${checkpoint.steps?.length ?? 0}`,
+        phase,
+        checkpoint.baselineReproduced && t('baselineReady'),
+      ].filter(Boolean).join(' · ')
+    }
+
     function ModelOutput({ output, latest, t }) {
       const scroll = useRef(null)
       const follow = useRef(true)
@@ -276,7 +298,7 @@ window.__ModuleLoader__.load({
       if (!entries.length) return h('p', null, t('noHistory'))
       const calls = new Map()
       for (const { attempt } of entries) {
-        if (attempt?.id && attempt.kind !== 'verifying') calls.set(attempt.id, attempt)
+        if (attempt?.id) calls.set(attempt.id, attempt)
       }
       const latestCall = [...calls.keys()].at(-1)
       return h('ol', { className: 'feishu-development-timeline' }, entries.map((entry, index) => {
@@ -320,7 +342,7 @@ window.__ModuleLoader__.load({
     function TaskDetail({ row, t, loadDetail, listRefresh }) {
       const [state, setState] = useState({ loading: true })
       const [version, refresh] = useState(0)
-      const polling = ['design_queued', 'designing', 'queued', 'developing'].includes(row.stage)
+      const polling = ['design_queued', 'designing', 'queued', 'developing', 'verify_queued', 'verifying'].includes(row.stage)
       useEffect(() => {
         let current = true
         let pending = false
@@ -345,7 +367,7 @@ window.__ModuleLoader__.load({
       const lastError = delivery?.lastError
       const history = detail?.history ?? []
       const current = history.at(-1)
-      const activeAttemptId = ['designing', 'developing'].includes(current?.stage) ? current.attempt?.id : undefined
+      const activeAttemptId = ['designing', 'developing', 'verifying'].includes(current?.stage) ? current.attempt?.id : undefined
       return h('section', { id: `${id}-output`, className: 'feishu-development-output', tabIndex: 0, 'data-stage': row.stage, 'aria-labelledby': `${id}-output-title` },
         h('div', { className: 'feishu-development-output-heading' },
           h('h2', { id: `${id}-output-title` }, row.summary || t('detail')),
@@ -358,6 +380,7 @@ window.__ModuleLoader__.load({
           onClick: () => { setState(previous => ({ ...previous, loading: true, error: false })); refresh(value => value + 1) },
         }, t('refresh'))),
         detail && h('div', null,
+          current?.operationCheckpoint && h(Field, { label: t('operationProgress'), value: operationProgress(current.operationCheckpoint, t) }),
           detail.requirement?.body && h('details', null, h('summary', null, t('requirement')),
             h('div', { className: 'feishu-development-field' }, detail.requirement.body)),
            current?.attachments?.length > 0 && h(Field, { label: t('attachments'), value: current.attachments.map(image => `${image.mimeType} · ${image.width} × ${image.height} · ${image.id.slice(0, 12)}`).join('\n') }),

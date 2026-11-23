@@ -29,6 +29,11 @@ dataDirectory: 'E:\DSH-Data\feishu-dev'
 designProvider: claude-code-design
 developmentProvider: claude-code
 providerPoliciesVerified: false
+desktopTemplateDirectory: 'E:\DSH-Test\desktop-template'
+desktopExecutable: 'E:\DeepSeek Harness\DeepSeek Harness.exe'
+desktopReadinessCommand: node
+desktopReadinessArgs: ['E:\DSH-Test\check-desktop.mjs']
+desktopStartupTimeoutMs: 60000
 projects:
   - name: 订单服务
     aliases: [订单]
@@ -74,7 +79,26 @@ projects:
 
 Agent 证据从 Codex 命令执行或 Claude Code Bash 工具结果采集，把提交、验证委派 ID、逐步观察、工具记录 ID 和输出 SHA-256 保存在任务详情。摘要、编译结果、普通文件内容或模型自述无法单独通过操作验证。Git worktree 不包含 `node_modules`，Host 会在调用验证 Agent 前按锁文件安装隔离依赖（npm 项目使用 `npm ci --no-audit --no-fund`，允许锁文件声明的必要生命周期脚本），并记录锁文件和 `package.json` 的指纹；缓存命中前使用固定 `npm ls --depth=0` 检查依赖完整性，失败时重新安装，不会复用其他工作树的依赖。
 
-独立 UI 验证按有效工具记录即时保存检查点，卡片显示环境准备和已完成步骤。失败或 Host 重启后，同一提交、需求、方案和步骤可以从未完成步骤继续，已经通过的步骤与缺陷基线不重复采集证据；临时数据丢失时先幂等重建前置状态，任何身份不匹配都会丢弃旧检查点。最终交付仍会合并并完整校验所有步骤。独立委派有 20 分钟总时限和 3 分钟无协议进展时限，资源清理最多等待 10 秒；超时后保留检查点并进入可重试状态。Agent 需要能够启动并操作指定环境，缺少环境或逐步记录时任务会补验或阻塞，不会直接交付。
+独立 UI 验证按有效工具记录即时保存检查点，卡片和调度面板显示环境准备、基线、当前步骤、本步耗时和推送状态；调度面板也会持续轮询并展示验证委派的实际模型输出。失败或 Host 重启后，同一提交、需求、方案、完整步骤和基线可以从未完成步骤继续，已经通过的步骤与缺陷基线不重复采集证据；临时数据丢失时先幂等重建前置状态，任何身份不匹配都会丢弃旧检查点。开发阶段的不完整证据也按相同身份进入检查点，只补缺失步骤。阻塞后本步耗时冻结，不再随卡片刷新继续增长。最终交付仍会合并并完整校验所有步骤。独立委派有 10 分钟总时限、60 秒父会话/activation 启动时限、3 分钟无协议进展时限和 3 分钟单步时限，整个验证阶段（固定检查、实测和推送）有 15 分钟总预算，资源清理最多等待 10 秒；首步计时从 activation 就绪后开始，持续输出或排查日志不会重置单步时限。超时后保留检查点并进入可重试状态。Provider、模型和宿主环境不属于验证 Agent 的修复范围，环境未就绪应立即报告，不允许通过修改 Provider、模型、endpoint、权限或仓库配置延长验证。Agent 只执行交付计划中的必检步骤，全量回归交给项目固定检查；缺少环境或逐步记录时任务会补验或阻塞，不会直接交付。
+
+### 可复用的隔离 Desktop 验证环境
+
+明确要求 DSH Desktop 的任务不再让 Agent 创建 profile、安装 Provider 或处理登录。Host 从 `desktopTemplateDirectory/profile` 复制专用测试环境到 `<dataDirectory>/desktop-validation/tasks/<任务编号>/profile`，用 `desktopExecutable` 和 Electron 的 `--user-data-dir=<隔离目录>` 启动独立实例。每个任务使用自己的目录，不共享运行实例；同任务重试保留 profile，跨任务不复用目录。模板清单和全部模板文件的 SHA-256 变化时重建副本，健康检查失败也会停止实例并在下次重试重建。Agent 完成后 Host 停止自己启动的进程树，插件停止时也会清理活动实例。
+
+模板根目录必须包含 `feishu-desktop-environment.json`：
+
+```json
+{
+  "provider": "claude-code",
+  "fixturesVersion": "2026-11-22.1",
+  "fixtureRepository": "E:\\DSH-Test\\sample-tasks",
+  "fixtureOrigin": "https://git.example.invalid/test/sample-tasks.git"
+}
+```
+
+`provider` 必须等于 `developmentProvider`。`fixtureRepository` 是专用样例任务库的本地 Git 仓库，Host 在每次启动前固定执行 `git remote get-url origin` 和 `git rev-parse --verify HEAD`，实际 origin 必须等于 `fixtureOrigin`。`profile` 应预先配置测试 Provider、插件和样例数据；只能引用专用测试凭据，不能复制或改写用户正在使用的真实 Desktop profile，也不要把 API Key 写进清单、健康检查参数或日志。
+
+`desktopReadinessCommand` 与 `desktopReadinessArgs` 是维护者控制的固定健康检查，不能留空。Host 会重复执行到成功或 `desktopStartupTimeoutMs` 超时；只有确认目标隔离实例已经启动、Provider 可调用、插件与样例任务库可用时才返回退出码 0。检查程序从 `FEISHU_DESKTOP_PROFILE`、`FEISHU_DESKTOP_PROVIDER`、`FEISHU_DESKTOP_FIXTURES_VERSION`、`FEISHU_DESKTOP_FIXTURE_REPOSITORY`、`FEISHU_VALIDATED_COMMIT` 和 `FEISHU_TASK_WORKTREE` 读取输入。它还应核实 DSH 实际使用了预期隔离目录；若当前 DSH 版本不接受该启动方式，必须失败而不是误操作用户实例。健康检查输出不会作为操作证据，也不会显示原始环境值。未配置模板或健康检查时，Desktop 任务会在委派前明确阻塞，不会退回 Agent 自行搭建环境。
 
 仍可配置由维护者控制的 `kind: operation` 检查。验证程序放在任务工作树之外，使用绝对路径。程序从 `FEISHU_OPERATION_VALIDATION` 读取验证场景，`FEISHU_VALIDATED_COMMIT` 提供待验证提交。实际操作并断言结果后，程序在 stdout 输出 `FEISHU_OPERATION_EVIDENCE ` 加 JSON。字段包括 `operation`、`expected`、顺序一致的 `steps`（每步有 `action`、`observed`）、整体 `observed` 和 `passed: true`。缺陷任务还需要 `baseline: { reproduced: true, observed: "实际复现结果" }`。
 

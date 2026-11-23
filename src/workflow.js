@@ -89,20 +89,55 @@ function agentOperationEvidence(validation, report, commit, attempt, baseline) {
   }
 }
 
-function resumeCheckpoint(task, validation, commit, baseline) {
+function bindEvidenceIdentity(evidence, task, validation) {
+  return {
+    ...evidence,
+    requirementVersion: task.requirementVersion,
+    planVersion: task.planVersion,
+    validationSteps: [...validation.steps],
+    baseCommit: validation.baseCommit,
+  }
+}
+
+function evidenceIdentityMatches(evidence, task, validation, commit) {
+  return evidence?.commit === commit && evidence.operation === validation.operation &&
+    evidence.expected === validation.expected && evidence.baseCommit === validation.baseCommit &&
+    evidence.requirementVersion === task.requirementVersion && evidence.planVersion === task.planVersion &&
+    JSON.stringify(evidence.validationSteps) === JSON.stringify(validation.steps)
+}
+
+function completeStoredEvidence(evidence, validation, task, commit) {
+  if (!evidence) return false
+  const validSteps = Array.isArray(evidence?.steps) && evidence.steps.length === validation.steps.length &&
+    evidence.steps.every((step, index) => step?.action === validation.steps[index] && observation(step.observed) &&
+      (!['agent', 'development'].includes(evidence.source) ||
+        (typeof step.toolId === 'string' && /^[a-f0-9]{64}$/u.test(step.outputSha256))))
+  const validBaseline = task.type !== 'fix' || (observation(evidence?.baseline) && evidence.baseline.trim() !== evidence.observed?.trim())
+  return evidenceIdentityMatches(evidence, task, validation, commit) && observation(evidence?.observed) && validSteps && validBaseline
+}
+
+function resumeCheckpoint(task, validation, commit, baseline, candidate) {
   const saved = task.operationCheckpoint
   const matches = saved?.commit === commit && saved.operation === validation.operation &&
     saved.expected === validation.expected && saved.baseCommit === validation.baseCommit &&
     saved.requirementVersion === task.requirementVersion && saved.planVersion === task.planVersion &&
     JSON.stringify(saved.steps) === JSON.stringify(validation.steps)
+  // 开发阶段不完整证据也进入同一检查点，只补未完成的步骤。
+  const source = matches ? saved : evidenceIdentityMatches(candidate, task, validation, commit) ? candidate : undefined
   const checkpoint = {
     commit, operation: validation.operation, expected: validation.expected, steps: validation.steps,
     baseCommit: validation.baseCommit, requirementVersion: task.requirementVersion, planVersion: task.planVersion,
-    assertions: matches && Array.isArray(saved.assertions) ? saved.assertions.slice(0, 64) : [],
+    assertions: source && Array.isArray(source.assertions) ? source.assertions.slice(0, 64) : [],
     preflight: matches ? saved.preflight : undefined,
+    startedAt: matches ? saved.startedAt : Date.now(),
+    stepStartedAt: Date.now(),
+    lastRecordedAt: matches ? saved.lastRecordedAt : undefined,
   }
   const progress = agentObservationProgress(validation, checkpoint.assertions, commit, baseline)
   checkpoint.assertions = progress.accepted
+  checkpoint.completedSteps = progress.steps.map((_, index) => index + 1)
+  checkpoint.baselineReproduced = progress.observations.length > progress.steps.length
+  checkpoint.phase = validation.type === 'fix' && !checkpoint.baselineReproduced && !baseline ? 'baseline' : 'step'
   return { checkpoint, progress }
 }
 
@@ -163,8 +198,8 @@ function availableActions(task) {
 }
 
 function invocation(task) {
-  const attempt = task.attempt?.kind === 'verifying' ? task.lastInvocation : task.attempt
-  if (!attempt || attempt.kind === 'verifying') return []
+  const attempt = task.attempt?.kind === 'verifying' && !task.attempt.childId ? task.lastInvocation : task.attempt
+  if (!attempt) return []
   const status = attempt.status === 'running' ? '运行中' : attempt.status === 'completed' ? '已完成' :
     attempt.status === 'cancelled' ? '已取消' : '异常结束'
   const end = attempt.finishedAt ?? attempt.heartbeatAt ?? Date.now()
@@ -201,8 +236,23 @@ function render(task, project) {
   }
   const checkpoint = task.operationCheckpoint
   if (checkpoint && (stage === 'verifying' || (stage === 'blocked' && task.failedStage === 'verifying'))) {
-    const environment = checkpoint.preflight === 'ready' ? '环境已就绪' : '正在检查环境'
-    lines.push(`UI 验证 ${environment} · 已完成 ${checkpoint.completedSteps?.length ?? 0}/${checkpoint.steps.length} 步${checkpoint.baselineReproduced ? ' · 基线已复现' : ''}`)
+    const environment = {
+      ready: '环境已就绪', creating: '正在创建隔离环境', launching: '正在启动隔离 Desktop', checking: '正在检查环境',
+    }[checkpoint.preflight] ?? '正在准备环境'
+    const completed = checkpoint.completedSteps?.length ?? 0
+    const current = Math.min(completed + 1, checkpoint.steps.length)
+    const end = checkpoint.finishedAt ?? Date.now()
+    const seconds = typeof checkpoint.stepElapsedMs === 'number'
+      ? Math.max(0, Math.floor(checkpoint.stepElapsedMs / 1000))
+      : checkpoint.stepStartedAt ? Math.max(0, Math.floor((end - checkpoint.stepStartedAt) / 1000)) : 0
+    const elapsed = seconds >= 60 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${seconds} 秒`
+    const activity = checkpoint.phase === 'pushing'
+      ? ` · ${stage === 'verifying' ? '正在推送' : '停在推送'}`
+      : checkpoint.phase === 'baseline'
+        ? ` · ${stage === 'verifying' ? '正在复现基线' : '停在基线复现'} · 本步 ${elapsed}`
+        : checkpoint.preflight === 'ready' && completed < checkpoint.steps.length
+          ? ` · ${stage === 'verifying' ? '正在执行' : '停在'}第 ${current} 步 · 本步 ${elapsed}` : ''
+    lines.push(`UI 验证 ${environment} · 已完成 ${completed}/${checkpoint.steps.length} 步${checkpoint.baselineReproduced ? ' · 基线已复现' : ''}${activity}`)
   }
   if (acceptsImage(task)) lines.push(`可回复此卡片发送原型图或截图。已附 ${task.attachments?.length ?? 0}/8 张。`)
   if (stage === 'manual_review' && task.manualReview?.kind === 'alternative') {
@@ -235,7 +285,7 @@ function render(task, project) {
   }
 }
 
-export function createWorkflow({ store, projects, userId, runner, repository, onError }) {
+export function createWorkflow({ store, projects, userId, runner, repository, onError, verificationTimeoutMs = 15 * 60_000 }) {
   let controller
   const operators = operatorIds(userId)
   const allowedOperator = actor => isOperatorId(actor) && operators !== null &&
@@ -451,18 +501,36 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
     })
     if (!task) return
     const running = new AbortController()
+    const verificationTimeout = new AbortController()
     controller = running
     running.id = task.id
-    const signal = running.signal
-    const persist = stage => store.transaction(() => {
-      signal.throwIfAborted()
+    const signal = AbortSignal.any([running.signal, verificationTimeout.signal])
+    let verificationTimer
+    const watchStage = stage => {
+      if (stage !== 'verifying') {
+        clearTimeout(verificationTimer)
+        verificationTimer = undefined
+      } else if (!verificationTimer) {
+        verificationTimer = setTimeout(() => verificationTimeout.abort(new Error('验证阶段超过总时间上限，已终止本次检查、实测或推送；有效检查点会在重试时复用。')), verificationTimeoutMs)
+      }
+    }
+    const persist = (stage, afterTimeout = false) => store.transaction(() => {
+      const executionSignal = afterTimeout ? running.signal : signal
+      executionSignal.throwIfAborted()
       if (store.get(task.id)?.attempt?.id !== attemptId || store.get(task.id)?.stage === 'cancelled') throw new Error('任务运行已结束。')
       update(task, stage)
+      watchStage(stage)
     })
+    watchStage(task.stage)
     const recordRun = (childId, provider) => {
       task.attempt.childId = childId
       task.attempt.provider = provider
       task.attempt.heartbeatAt = Date.now()
+      if (task.stage === 'verifying' && task.operationCheckpoint) {
+        task.operationCheckpoint.stepStartedAt = Date.now()
+        delete task.operationCheckpoint.finishedAt
+        delete task.operationCheckpoint.stepElapsedMs
+      }
       persist(task.stage)
     }
     let attemptId = task.attempt.id
@@ -551,12 +619,12 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
         }
         task.attempt.development = { status: development.status, summary: development.summary, ...(development.alternative && { alternative: development.alternative }) }
         if (development.operationEvidence) {
-          task.operationEvidence = {
+          task.operationEvidence = bindEvidenceIdentity({
             ...development.operationEvidence,
             operation: validation.operation,
             expected: validation.expected,
             source: 'development',
-          }
+          }, task, { ...validation, type: task.type, baseCommit: task.work.base })
         }
         if (development.status === 'needs_clarification') throw new Error(`开发需要补充：${development.summary}`)
         if (development.status === 'blocked') throw new Error(`开发受阻：${development.summary}`)
@@ -584,23 +652,26 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
       if (!result.checks?.length || !result.checks.every(check => check.passed)) throw new Error('验证未通过，请查看检查结果。')
       if (operationValidation) {
         if (operationReports?.length) {
-          result.operationEvidence = { ...observedOperation(operationValidation, operationReports, task), commit: result.commit }
+          result.operationEvidence = bindEvidenceIdentity({ ...observedOperation(operationValidation, operationReports, task), commit: result.commit }, task, operationValidation)
           task.operationEvidence = result.operationEvidence
           persist('verifying')
         } else {
-          // 同一提交和同一验证方案的开发实测可以直接进入交付证据。
-          const candidate = task.operationEvidence?.commit === result.commit &&
-            task.operationEvidence.operation === validation.operation && task.operationEvidence.expected === validation.expected
+          // 完整证据和检查点使用同一套提交、步骤、需求/方案版本及基线身份。
+          const candidate = evidenceIdentityMatches(task.operationEvidence, task, operationValidation, result.commit)
             ? task.operationEvidence : undefined
-          const baseline = ['agent', 'development'].includes(previousEvidence?.source) ? previousEvidence.baselineTool : undefined
+          const baseline = ['agent', 'development'].includes(previousEvidence?.source) && previousEvidence.baseCommit === task.work.base
+            ? previousEvidence.baselineTool : undefined
           let developmentEvidence
           if (candidate?.source === 'development') {
-            try { developmentEvidence = agentOperationEvidence(operationValidation, candidate, result.commit, task.attempt, baseline) } catch { /* 缺少证据时补验。 */ }
+            try {
+              developmentEvidence = bindEvidenceIdentity(
+                agentOperationEvidence(operationValidation, candidate, result.commit, task.attempt, baseline), task, operationValidation)
+            } catch { /* 缺少证据时进入检查点补验。 */ }
           }
-          if (candidate && (candidate.source !== 'development' || developmentEvidence)) {
+          if (candidate?.source === 'development' ? developmentEvidence : completeStoredEvidence(candidate, operationValidation, task, result.commit)) {
             task.operationEvidence = developmentEvidence ?? candidate
           } else {
-            let { checkpoint, progress } = resumeCheckpoint(task, operationValidation, result.commit, baseline)
+            let { checkpoint, progress } = resumeCheckpoint(task, operationValidation, result.commit, baseline, candidate)
             let checkpointError
             const saveCheckpoint = () => {
               task.operationCheckpoint = checkpoint
@@ -608,16 +679,28 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
             }
             const recordPreflight = status => {
               checkpoint.preflight = status
+              checkpoint.phase = status === 'ready'
+                ? (operationValidation.type === 'fix' && !checkpoint.baselineReproduced && !baseline ? 'baseline' : 'step')
+                : 'preflight'
+              delete checkpoint.finishedAt
+              delete checkpoint.stepElapsedMs
+              if (status === 'ready') checkpoint.stepStartedAt = Date.now()
               saveCheckpoint()
             }
             const recordCheckpoint = assertion => {
               const next = agentObservationProgress(operationValidation, [...checkpoint.assertions, assertion], result.commit, baseline)
-              if (next.accepted.length === checkpoint.assertions.length) return
+              if (next.accepted.length === checkpoint.assertions.length) return false
               checkpoint.assertions = next.accepted
               checkpoint.completedSteps = next.steps.map((_, index) => index + 1)
               checkpoint.baselineReproduced = next.observations.length > next.steps.length
+              checkpoint.phase = operationValidation.type === 'fix' && !checkpoint.baselineReproduced && !baseline ? 'baseline' : 'step'
+              checkpoint.lastRecordedAt = Date.now()
+              checkpoint.stepStartedAt = checkpoint.lastRecordedAt
               saveCheckpoint()
+              return true
             }
+            // 在调用新的 Agent 前先恢复并持久化进度，重启后的首张卡片不会回到 0/N。
+            saveCheckpoint()
             if (task.attempt.kind !== 'verifying') {
               flushOutput()
               task.attempt = { id: randomUUID(), kind: 'verifying', startedAt: Date.now(), status: 'running' }
@@ -638,33 +721,46 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
               persist('manual_review')
               return
             }
-            task.operationEvidence = agentOperationEvidence(operationValidation,
-              { ...evidence, assertions: [...checkpoint.assertions, ...evidence.assertions] }, result.commit, task.attempt, baseline)
-            delete task.operationCheckpoint
+            task.operationEvidence = bindEvidenceIdentity(agentOperationEvidence(operationValidation,
+              { ...evidence, assertions: [...checkpoint.assertions, ...evidence.assertions] }, result.commit, task.attempt, baseline), task, operationValidation)
             persist('verifying')
           }
         }
         result.operationEvidence = task.operationEvidence
-        delete task.operationCheckpoint
+        task.operationCheckpoint = {
+          commit: result.commit, operation: validation.operation, expected: validation.expected, steps: validation.steps,
+          baseCommit: operationValidation.baseCommit, requirementVersion: task.requirementVersion, planVersion: task.planVersion,
+          preflight: 'ready', phase: 'pushing', completedSteps: validation.steps.map((_, index) => index + 1),
+          baselineReproduced: Boolean(task.operationEvidence.baseline), startedAt: task.operationCheckpoint?.startedAt ?? Date.now(),
+          stepStartedAt: Date.now(),
+        }
+        delete task.operationCheckpoint.finishedAt
+        delete task.operationCheckpoint.stepElapsedMs
         persist('verifying')
       }
       const pushed = await repository.push({ task, project, signal, result })
+      delete task.operationCheckpoint
       task.work.pushedCommit = pushed.commit
       task.result.remote = pushed.remote
       persist('review')
     } catch (error) {
       flushOutput()
-      if (!signal.aborted) {
+      if (!running.signal.aborted) {
         if (task.attempt?.status === 'running') {
           task.attempt.status = 'error'
           task.attempt.finishedAt = Date.now()
         }
+        if (task.stage === 'verifying' && task.operationCheckpoint?.stepStartedAt) {
+          task.operationCheckpoint.finishedAt = Date.now()
+          task.operationCheckpoint.stepElapsedMs = Math.max(0, task.operationCheckpoint.finishedAt - task.operationCheckpoint.stepStartedAt)
+        }
         task.failedStage = task.stage
         task.error = error instanceof Error ? error.message.slice(0, 600) : '执行失败。'
-        persist('blocked')
+        persist('blocked', true)
       }
     } finally {
       clearInterval(heartbeat)
+      clearTimeout(verificationTimer)
       controller = undefined
     }
   }

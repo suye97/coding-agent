@@ -44,6 +44,22 @@ test('dispatch reads persisted requirement revisions and results only for the ow
   assert.ok(history.every(entry => Number.isFinite(entry.recordedAt)))
 })
 
+test('dispatch exposes safe UI verification progress without tool records', t => {
+  const dataDirectory = mkdtempSync(join(tmpdir(), 'feishu-dispatch-progress-'))
+  t.after(() => rmSync(dataDirectory, { recursive: true, force: true }))
+  const config = { appId: 'cli_fixture', dataDirectory }
+  const store = openStore(dispatchDatabase(config))
+  store.save({ id: 'ABCDEF12', chatId: 'chat', stage: 'verifying', requirement: { body: '需求' },
+    operationCheckpoint: { preflight: 'ready', phase: 'step', steps: ['打开页面'], completedSteps: [], baselineReproduced: false,
+      startedAt: 100, stepStartedAt: 150, lastRecordedAt: null, finishedAt: 1500, stepElapsedMs: 1350,
+      assertions: [{ line: 'private tool output' }] } })
+  store.close()
+  const dispatch = createDispatchHandler(config)
+  const { history } = dispatch('feishuDispatch/detail', { taskId: 'ABCDEF12' }, undefined, owner).value
+  assert.deepEqual(history[0].operationCheckpoint, { preflight: 'ready', phase: 'step', steps: ['打开页面'], completedSteps: [],
+    baselineReproduced: false, startedAt: 100, stepStartedAt: 150, lastRecordedAt: null, finishedAt: 1500, stepElapsedMs: 1350 })
+})
+
 test('Feishu card delivery uses the JSON 2.0 submit field and persists safe response diagnostics', async t => {
   const card = encodeCard({ title: '需求确认', text: '正文', actions: [{ label: '补充信息', token: 'token', form: true }] })
   const submit = card.body.elements.find(element => element.tag === 'form').elements.at(-1)

@@ -41,6 +41,18 @@ function historyItem(task) {
     rework: task.rework, error: task.error,
     attachments: (task.attachments ?? []).map(({ id, mimeType, width, height, byteLength }) => ({ id, mimeType, width, height, byteLength })),
     manualReview: task.manualReview,
+    operationCheckpoint: task.operationCheckpoint && {
+      preflight: task.operationCheckpoint.preflight,
+      phase: task.operationCheckpoint.phase ?? null,
+      steps: task.operationCheckpoint.steps,
+      completedSteps: task.operationCheckpoint.completedSteps ?? [],
+      baselineReproduced: Boolean(task.operationCheckpoint.baselineReproduced),
+      startedAt: task.operationCheckpoint.startedAt ?? null,
+      stepStartedAt: task.operationCheckpoint.stepStartedAt ?? null,
+      lastRecordedAt: task.operationCheckpoint.lastRecordedAt ?? null,
+      finishedAt: task.operationCheckpoint.finishedAt ?? null,
+      stepElapsedMs: task.operationCheckpoint.stepElapsedMs ?? null,
+    },
     work: task.work && { branch: task.work.branch },
     result: task.result && {
       branch: task.result.branch, commit: task.result.commit, changes: task.result.changes,

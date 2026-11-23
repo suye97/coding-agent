@@ -31,6 +31,7 @@ async function fixture(t, operators = userId) {
   let developmentStatus = 'implemented'
   let makeReports = scenario => scenario ? [report(observedReport(scenario))] : []
   let changeReview
+  let verificationTimeoutMs
   const attempts = []
   const pushes = []
   const verifications = []
@@ -73,7 +74,7 @@ async function fixture(t, operators = userId) {
     },
   }
   const channel = { async publish(value) { card = value.card; return value.messageId ?? 'om_card' } }
-  const build = () => createWorkflow({ store, projects, userId: operators, runner, repository, onError: assert.fail })
+  const build = () => createWorkflow({ store, projects, userId: operators, runner, repository, onError: assert.fail, verificationTimeoutMs })
   let workflow = build()
   t.after(async () => { store.close(); await rm(directory, { recursive: true, force: true }) })
   const send = (text, options = {}) => workflow.onMessage({ text, chatId, userId, eventId: `m-${++sequence}`, ...options })
@@ -94,6 +95,7 @@ async function fixture(t, operators = userId) {
     setDevelopmentStatus: value => { developmentStatus = value },
     setOperationReports: factory => { makeReports = factory },
     setChangeReview: value => { changeReview = value },
+    setVerificationTimeout: value => { verificationTimeoutMs = value },
     attachImage: options => workflow.attachImage({ chatId, userId, eventId: `i-${++sequence}`, ...options }),
     attachmentTarget: options => workflow.attachmentTarget({ chatId, userId, replyTo: 'om_card', ...options }),
     restart() {
@@ -284,6 +286,7 @@ test('development operation evidence on the same commit avoids a duplicate verif
   await app.work()
   await app.work()
   assert.equal(app.store().inStage('blocked').length, 1)
+  assert.equal(app.store().inStage('blocked')[0].operationCheckpoint.phase, 'pushing')
   await app.publish()
   assert.equal(app.action('重试'), '已记录。')
   await app.work()
@@ -291,6 +294,33 @@ test('development operation evidence on the same commit avoids a duplicate verif
   assert.equal(task.result.operationEvidence.childId, 'develop-child')
   assert.equal(task.result.operationEvidence.commit, 'abcdef')
   assert.deepEqual(app.pushes, ['abcdef'])
+})
+
+test('the whole verification stage has a budget and preserves visible retry state', async t => {
+  const app = await fixture(t)
+  app.setVerificationTimeout(30)
+  app.restart()
+  app.passChecks()
+  app.setOperationReports(() => [])
+  app.runner.verifyOperation = ({ signal, recordRun, recordPreflight }) => new Promise((_, reject) => {
+    recordPreflight('ready')
+    recordRun('verify-child', 'codex')
+    if (signal.aborted) reject(signal.reason)
+    else signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+  })
+  app.send('开发需求｜订单\n点击保存按钮后显示已更新')
+  await app.work()
+  await app.work()
+  const [blocked] = app.store().inStage('blocked')
+  assert.match(blocked.error, /验证阶段超过总时间上限/)
+  assert.equal(blocked.failedStage, 'verifying')
+  assert.equal(blocked.operationCheckpoint.preflight, 'ready')
+  assert.equal(typeof blocked.operationCheckpoint.finishedAt, 'number')
+  assert.equal(typeof blocked.operationCheckpoint.stepElapsedMs, 'number')
+  await app.publish()
+  assert.match(app.card().text, /调用记录 codex/)
+  assert.match(app.card().text, /停在第 1 步/)
+  assert.match(app.card().text, /本步/)
 })
 
 test('failed UI verification persists validated steps and resumes without repeating the baseline', async t => {
@@ -385,6 +415,69 @@ test('stale or incomplete development evidence falls back to independent verific
   await app.work()
   await app.work()
   assert.equal(delegated, 1)
+  assert.equal(app.store().inStage('review')[0].result.operationEvidence.childId, 'verify-child')
+})
+
+test('partial development evidence resumes at the first missing step with the same identity', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.setOperationReports(() => [])
+  const assertion = (id, step) => ({ id, sha256: 'a'.repeat(64),
+    line: JSON.stringify({ commit: 'abcdef', step, observed: `第 ${step} 步实测` }) })
+  app.runner.develop = async ({ recordRun, recordResult }) => {
+    recordRun('develop-child', 'workspace')
+    recordResult({ stopReason: 'completed' })
+    return { status: 'implemented', summary: '完成', operationEvidence: {
+      observed: '尚未完成全部步骤', commit: 'abcdef', assertions: [assertion('development-step-1', 1)],
+    } }
+  }
+  let calls = 0
+  app.runner.verifyOperation = async input => {
+    calls++
+    assert.deepEqual(input.checkpoint, { completedSteps: [1] })
+    assert.deepEqual(input.task.operationCheckpoint.completedSteps, [1])
+    input.recordRun('verify-child', 'workspace')
+    return { observed: '补验完成', assertions: [assertion('verification-step-2', 2)] }
+  }
+  app.send('开发需求｜订单\n点击保存按钮后显示已更新')
+  await app.work()
+  await app.work()
+  assert.equal(calls, 1)
+  const [task] = app.store().inStage('review')
+  assert.deepEqual(task.result.operationEvidence.steps.map(step => step.toolId), ['development-step-1', 'verification-step-2'])
+})
+
+test('stored agent evidence with a stale plan identity cannot skip independent verification', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.setOperationReports(() => [])
+  app.runner.develop = async ({ recordRun, recordResult }) => {
+    recordRun('develop-child', 'workspace')
+    recordResult({ stopReason: 'completed' })
+    return { status: 'implemented', summary: '完成', operationEvidence: {
+      observed: '筛选生效', commit: 'abcdef',
+      assertions: validation.steps.map((_, index) => ({ id: `tool-${index}`, sha256: 'b'.repeat(64),
+        line: JSON.stringify({ commit: 'abcdef', step: index + 1, observed: `实测 ${index + 1}` }) })),
+    } }
+  }
+  app.failPushOnce()
+  app.send('开发需求｜订单\n点击保存按钮后显示已更新')
+  await app.work()
+  await app.work()
+  const [blocked] = app.store().inStage('blocked')
+  blocked.operationEvidence.planVersion = 0
+  app.store().save(blocked)
+  let calls = 0
+  app.runner.verifyOperation = async ({ commit, recordRun }) => {
+    calls++
+    recordRun('verify-child', 'workspace')
+    return { observed: '独立补验通过', assertions: validation.steps.map((_, index) => ({ id: `verify-${index}`, sha256: 'c'.repeat(64),
+      line: JSON.stringify({ commit, step: index + 1, observed: `补验 ${index + 1}` }) })) }
+  }
+  await app.publish()
+  assert.equal(app.action('重试'), '已记录。')
+  await app.work()
+  assert.equal(calls, 1)
   assert.equal(app.store().inStage('review')[0].result.operationEvidence.childId, 'verify-child')
 })
 

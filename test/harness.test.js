@@ -168,6 +168,8 @@ test('operation evidence comes from completed tool output on the verification tu
     assert.match(text, /Host 已对存在 package-lock.json 的 Node 项目完成依赖预检/)
     assert.match(text, /不要重复执行 npm ci/)
     assert.match(text, /一次确认隔离实例因登录或权限条件无法进入应用后/)
+    assert.match(text, /不要安装或配置 Provider/)
+    assert.match(text, /只执行 validation\.steps 中的交付必检步骤/)
     return startActivation(options)
   }
   const runner = createHarness(ctx, { developmentProvider: 'codex', providerPoliciesVerified: true })
@@ -290,6 +292,18 @@ test('verification stops after protocol activity stays idle', async () => {
   await assert.rejects(pending, /长时间没有进展/)
 })
 
+test('an active agent cannot exceed the per-step budget by continuously investigating', async () => {
+  const { ctx, input } = fixture()
+  const { stdout, started } = liveProvider(ctx, ['claude', '--output-format', 'stream-json', '--input-format', 'stream-json'])
+  const runner = createHarness(ctx, { developmentProvider: 'claude', providerPoliciesVerified: true }, {
+    prepareOperation: async () => {}, verificationTimeoutMs: 5000, verificationIdleTimeoutMs: 5000, verificationStepTimeoutMs: 30,
+  })
+  const pending = runner.verifyOperation({ ...input, commit: 'commit', validation })
+  await started
+  write(stdout, { type: 'stream_event', parent_tool_use_id: null, event: { type: 'message_start', message: { id: 'message' } } })
+  await assert.rejects(pending, /单个验证步骤超过时间上限/)
+})
+
 test('activation cleanup cannot keep a completed delegation pending forever', async () => {
   const { ctx, input, seen } = fixture()
   ctx.subagents.startActivation = async () => ({
@@ -317,4 +331,89 @@ test('cancellation detaches the observer and keeps the terminal cancellation beh
   write(stdout, { type: 'stream_event', parent_tool_use_id: null, event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'late' } } })
   terminal.resolve({ stopReason: 'cancelled' })
   await assert.rejects(pending, { name: 'AbortError' })
+})
+
+test('verification startup deadline covers parent creation and disposes a late parent', async () => {
+  const { ctx, input, seen } = fixture()
+  const late = Promise.withResolvers()
+  ctx.agents.create = () => late.promise
+  const runner = createHarness(ctx, { developmentProvider: 'workspace', providerPoliciesVerified: true }, {
+    prepareOperation: async () => {}, verificationStartupTimeoutMs: 30,
+    verificationTimeoutMs: 1000, verificationIdleTimeoutMs: 1000, verificationStepTimeoutMs: 1000,
+  })
+  await assert.rejects(runner.verifyOperation({ ...input, commit: 'commit', validation }), /验证委派启动超过时间上限/)
+  late.resolve({ agent: {}, async dispose() { seen.push('close late parent') } })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok(seen.includes('close late parent'))
+})
+
+test('verification startup deadline covers activation and disposes a late activation', async () => {
+  const { ctx, input, seen } = fixture()
+  const late = Promise.withResolvers()
+  ctx.subagents.startActivation = () => late.promise
+  const runner = createHarness(ctx, { developmentProvider: 'workspace', providerPoliciesVerified: true }, {
+    prepareOperation: async () => {}, verificationStartupTimeoutMs: 30,
+    verificationTimeoutMs: 1000, verificationIdleTimeoutMs: 1000, verificationStepTimeoutMs: 1000,
+  })
+  await assert.rejects(runner.verifyOperation({ ...input, commit: 'commit', validation }), /验证委派启动超过时间上限/)
+  late.resolve({ childId: 'late-child', result: Promise.resolve({ stopReason: 'cancelled', output: [] }),
+    async dispose() { seen.push('close late child') } })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok(seen.includes('close late child'))
+  assert.ok(seen.includes('close parent'))
+})
+
+test('per-step verification budget starts only after activation is ready', async () => {
+  const { ctx, input } = fixture()
+  let activated = false
+  ctx.subagents.startActivation = async () => {
+    await new Promise(resolve => setTimeout(resolve, 70))
+    activated = true
+    return { childId: 'slow-start', result: new Promise(() => {}), async dispose() {} }
+  }
+  const runner = createHarness(ctx, { developmentProvider: 'workspace', providerPoliciesVerified: true }, {
+    prepareOperation: async () => {}, verificationStartupTimeoutMs: 300,
+    verificationTimeoutMs: 1000, verificationIdleTimeoutMs: 1000, verificationStepTimeoutMs: 40,
+  })
+  await assert.rejects(runner.verifyOperation({ ...input, commit: 'commit', validation }), /单个验证步骤超过时间上限/)
+  assert.equal(activated, true)
+})
+
+test('Host prepares an isolated Desktop before activation and releases it afterward', async () => {
+  const { ctx, input } = fixture([{ status: 'passed', observed: 'Desktop 实测通过' }])
+  const startActivation = ctx.subagents.startActivation
+  let prepared = false
+  let released = false
+  ctx.subagents.startActivation = options => {
+    assert.equal(prepared, true)
+    assert.match(options.prompt[0].text, /Host 已启动并通过健康检查的隔离 DSH Desktop/)
+    assert.ok(options.prompt[0].text.includes('D:/test-desktop-profile'))
+    return startActivation(options)
+  }
+  const runner = createHarness(ctx, { developmentProvider: 'workspace', providerPoliciesVerified: true }, {
+    prepareOperation: async () => {},
+    desktopEnvironment: {
+      async prepare({ taskId, commit }) {
+        assert.equal(taskId, 'ABCDEF12')
+        assert.equal(commit, 'commit')
+        prepared = true
+        return { fingerprint: 'fingerprint', profileDirectory: 'D:/test-desktop-profile', async release() { released = true } }
+      },
+    },
+  })
+  const result = await runner.verifyOperation({ ...input, commit: 'commit', validation: { ...validation, operation: 'DSH Desktop 筛选订单' } })
+  assert.equal(result.observed, 'Desktop 实测通过')
+  assert.equal(released, true)
+})
+
+test('design validation separates delivery-critical steps from full regression', async () => {
+  const { ctx, input } = fixture()
+  const startActivation = ctx.subagents.startActivation
+  ctx.subagents.startActivation = options => {
+    assert.match(options.prompt[0].text, /steps 只列本次交付必须实测的最短路径/)
+    assert.match(options.prompt[0].text, /全量回归由项目固定检查承担/)
+    return startActivation(options)
+  }
+  const runner = createHarness(ctx, { designProvider: 'read-only', providerPoliciesVerified: true })
+  await runner.design(input)
 })

@@ -53,6 +53,7 @@ export function normalizeAlternative(value) {
 
 const validationInstructions = [
   'validation 必填。涉及用户操作、界面交互、浏览器或 Desktop 运行行为时，使用 {"kind":"operation","operation":"用户要完成的具体操作","steps":["可以实际执行的步骤"],"expected":"可观察的预期结果"}。steps 按执行顺序记录，最多 8 步，操作、步骤和预期各最多 300 字符。',
+  'steps 只列本次交付必须实测的最短路径，不要把完整应用巡检、样式走查或无关回归塞进步骤。全量回归由项目固定检查承担；只有本次变更直接影响且没有自动化覆盖的行为才进入 operation steps。',
   '仅纯代码结构、接口或命令行逻辑变更且不涉及用户界面操作时，使用 {"kind":"checks","reason":"具体说明可验证的回归检查"}。缺陷修复需要证明基线可复现且修复后回归检查通过，不要求界面操作。退出码和模型自述不能代替实际观察。',
   '如原要求无法实现而可以改变范围，使用 alternative 对象，提供 summary、impact（各最多 800 字符）和替代操作自己的 validation。清楚说明与原需求的差异，等待所有者通过卡片批准，不要自行替换目标。',
 ]
@@ -95,8 +96,9 @@ function readDevelopment(output) {
 
 // 管理每个任务的设计与开发委派会话。
 export function createHarness(ctx, config, {
-  loadAttachment, gitCommit, prepareOperation = prepareOperationEnvironment,
-  verificationTimeoutMs = 20 * 60_000, verificationIdleTimeoutMs = 3 * 60_000, cleanupTimeoutMs = 10_000,
+  loadAttachment, gitCommit, prepareOperation = prepareOperationEnvironment, desktopEnvironment,
+  verificationTimeoutMs = 10 * 60_000, verificationIdleTimeoutMs = 3 * 60_000,
+  verificationStepTimeoutMs = 3 * 60_000, verificationStartupTimeoutMs = 60_000, cleanupTimeoutMs = 10_000,
 } = {}) {
   const output = createModelOutputObserver(ctx)
   const readCommit = gitCommit ?? ((cwd, signal) => execGit(cwd, signal, 'rev-parse', 'HEAD'))
@@ -111,38 +113,67 @@ export function createHarness(ctx, config, {
     const cwd = stage === 'design' ? project.path : task.work.worktree
     const existing = ctx.agents.get(sessionId)
     if (existing) throw new Error('任务会话正在 DSH 中打开，请关闭该会话后重试。')
-    const parent = task.sessionCreated
-      ? await ctx.agents.resume({ resumeSessionId: sessionId, signal: parentSignal })
-      : await ctx.agents.create({ sessionId, meta: { cwd: project.path }, signal: parentSignal })
     const timeout = new AbortController()
     const timed = stage === 'verify'
     const signal = timed ? AbortSignal.any([parentSignal, timeout.signal]) : parentSignal
     let idleTimer
+    let stepTimer
     const activity = () => {
       if (!timed) return
       clearTimeout(idleTimer)
       idleTimer = setTimeout(() => timeout.abort(new Error('操作验证长时间没有进展，已终止本次委派；已完成步骤可在重试时复用。')), verificationIdleTimeoutMs)
     }
+    const step = () => {
+      if (!timed) return
+      clearTimeout(stepTimer)
+      stepTimer = setTimeout(() => timeout.abort(new Error('单个验证步骤超过时间上限，已停止继续排查；已完成步骤可在重试时复用。')), verificationStepTimeoutMs)
+    }
+    // 父会话恢复和 activation 创建同样计入总预算与独立启动预算。
     const totalTimer = timed ? setTimeout(() => timeout.abort(new Error('操作验证超过时间上限，已终止本次委派；已完成步骤可在重试时复用。')), verificationTimeoutMs) : undefined
+    const startupTimer = timed ? setTimeout(() => timeout.abort(new Error('验证委派启动超过时间上限，已停止等待；请检查父会话和 Provider 状态。')), verificationStartupTimeoutMs) : undefined
     activity()
+    let parent
     let activation
     let release
     const observation = output.observe(cwd, text => {
       if (!signal.aborted) recordOutput(text)
-    }, recordAssertion, activity)
+    }, item => {
+      const accepted = recordAssertion?.(item)
+      if (accepted) step()
+    }, activity)
     const dispose = () => release ??= Promise.resolve().then(() => activation.dispose())
     const cancel = () => { observation.stop(); void dispose().catch(() => {}) }
     try {
+      const startingParent = Promise.resolve().then(() => task.sessionCreated
+        ? ctx.agents.resume({ resumeSessionId: sessionId, signal })
+        : ctx.agents.create({ sessionId, meta: { cwd: project.path }, signal }))
+      // 超时后接口仍可能返回句柄；迟到的资源也必须关闭，不能遗留在 DSH 中。
+      const managedParent = startingParent.then(async created => {
+        if (signal.aborted) await boundedCleanup(Promise.resolve().then(() => created.dispose()), cleanupTimeoutMs)
+        return created
+      })
+      parent = await abortable(managedParent, signal)
       if (!task.sessionCreated) recordSession()
       signal.throwIfAborted()
       const prompt = await composeImagePrompt(instructions, task, loadAttachment)
       signal.throwIfAborted()
-      activation = await observation.activate(() => ctx.subagents.startActivation({
+      const startingActivation = Promise.resolve().then(() => observation.activate(() => ctx.subagents.startActivation({
         provider, label: `${task.id} ${stage}`, cwd, parent: parent.agent, signal, delivery: 'caller', prompt,
-      }))
+      })))
+      const managedActivation = startingActivation.then(async created => {
+        if (signal.aborted) {
+          void created.result.catch(() => {})
+          await boundedCleanup(Promise.resolve().then(() => created.dispose()), cleanupTimeoutMs)
+        }
+        return created
+      })
+      activation = await abortable(managedActivation, signal)
       signal.addEventListener('abort', cancel, { once: true })
       if (signal.aborted) cancel()
       recordRun(activation.childId, provider)
+      clearTimeout(startupTimer)
+      // 只有环境和 activation 都已就绪后，第一步的三分钟预算才开始。
+      step()
       const result = await abortable(activation.result, signal)
       signal.throwIfAborted()
       recordResult({ stopReason: result.stopReason })
@@ -153,7 +184,9 @@ export function createHarness(ctx, config, {
     } finally {
       observation.stop()
       clearTimeout(totalTimer)
+      clearTimeout(startupTimer)
       clearTimeout(idleTimer)
+      clearTimeout(stepTimer)
       signal.removeEventListener('abort', cancel)
       try {
         if (activation) {
@@ -162,10 +195,12 @@ export function createHarness(ctx, config, {
           await boundedCleanup(dispose(), cleanupTimeoutMs)
         }
       } finally {
-        try {
-          await boundedCleanup(ctx.subagents.drainDescendants([parent.agent]), cleanupTimeoutMs)
-        } finally {
-          await boundedCleanup(parent.dispose(), cleanupTimeoutMs)
+        if (parent) {
+          try {
+            await boundedCleanup(ctx.subagents.drainDescendants([parent.agent]), cleanupTimeoutMs)
+          } finally {
+            await boundedCleanup(parent.dispose(), cleanupTimeoutMs)
+          }
         }
       }
     }
@@ -177,19 +212,34 @@ export function createHarness(ctx, config, {
       const { task, commit, validation, baselineObserved, checkpoint, recordCheckpoint, recordPreflight } = input
       recordPreflight?.('checking')
       await prepareOperation({ cwd: task.work.worktree, signal: input.signal })
+      const needsDesktop = /\b(?:DSH\s+Desktop|Desktop)\b/iu.test([task.requirement.body, validation.operation, validation.expected, ...validation.steps].join('\n'))
+      let desktop
+      if (needsDesktop) {
+        if (!desktopEnvironment) throw new Error('当前任务要求 DSH Desktop 实测，但 Host 未配置可复用的隔离验证环境。')
+        desktop = await desktopEnvironment.prepare({
+          taskId: task.id, commit, worktree: task.work.worktree, signal: input.signal, onStatus: recordPreflight,
+        })
+      }
       recordPreflight?.('ready')
-      const output = await run({ ...input, recordAssertion: item => {
+      let output
+      try {
+        output = await run({ ...input, recordAssertion: item => {
         if (assertions.length < 64) assertions.push(item)
-        recordCheckpoint?.(item)
+        return recordCheckpoint?.(item)
       } }, 'verify', [
-        '你是交付验证 Agent。在当前任务工作树启动已提交的版本，实际操作应用并核对结果。需要时可编写临时验证程序，放在工作树之外，结束后清理你启动的进程和临时文件。现有项目文件、Git 引用和配置保持原样。不要推送、部署、连接真实客户服务或改动用户正在使用的应用。',
+        '你是交付验证 Agent。在当前任务工作树启动已提交的版本，实际操作应用并核对结果。只执行 validation.steps 中的交付必检步骤，不要自行扩大为完整应用巡检；额外探索不能阻塞交付。需要时可编写临时验证程序，放在工作树之外，结束后清理你启动的进程和临时文件。现有项目文件、Git 引用和配置保持原样。不要推送、部署、连接真实客户服务或改动用户正在使用的应用。',
+        'Provider、模型、宿主进程、宿主日志和项目仓库配置不属于验证 Agent 的修复范围。不要安装或配置 Provider，不要修改模型、endpoint、权限或仓库配置，不要通过排查宿主日志延长验证。发现 Provider 未注册、模型一直读取、项目仓库一直处理或其他环境未就绪时，一次确认后立即报告环境阻塞，由 Host 或操作人处理。',
         'Host 已对存在 package-lock.json 的 Node 项目完成依赖预检，并用锁文件指纹缓存结果，不要重复执行 npm ci。没有可用锁文件或其他类型项目可按项目约定准备依赖。不要复用其他工作树的依赖，不要修改 package.json 或锁文件。',
         `按顺序执行下方每个步骤。用应用要求的运行环境：明确要求 DSH Desktop 时，要实际加载该提交的 Desktop 版本。浏览器替身、模拟 Host 或源码检查只能作诊断。缺少环境或权限时报告阻塞。不要反复创建 Desktop 实例或 profile，不要读取、索取或填写真实登录凭据和 API Key；一次确认隔离实例因登录或权限条件无法进入应用后，立即报告具体阻塞，不要重复尝试。缺陷任务${baselineObserved ? '已有同一基线的实测复现记录，本次只验证修复结果。' : '在独立临时目录实际复现 baseCommit 的缺陷，再验证修复。'}`,
+        ...(desktop ? [`Host 已启动并通过健康检查的隔离 DSH Desktop。直接操作这个现有实例，不得再启动实例、创建 profile 或修改 Provider。环境信息：${JSON.stringify({ profileDirectory: desktop.profileDirectory, fingerprint: desktop.fingerprint })}`] : []),
         ...(checkpoint?.completedSteps ? [`以下是同一提交、同一方案已经由 Host 核验的步骤，不要重复输出其证据。恢复应用状态可做必要导航；如果已完成步骤创建的临时数据或运行状态已不存在，先按原步骤幂等重建前置状态，核对已有数据以避免重复创建，再从下一个未完成步骤继续实测并保留原步骤编号。前置状态重建不是新的通过证据。无法重建时报告具体阻塞：${JSON.stringify(checkpoint)}`] : []),
         '证据由工具输出采集。让实际操作程序仅在对应行为断言通过后向 stdout 写一行 FEISHU_AGENT_OBSERVATION 加 JSON，字段为 commit、step（按步骤从 1 编号）、observed（具体观察，最多 500 字符）。仅当本次实际复现缺陷基线时才输出 step 为 0、commit 为 baseCommit、observed 为复现结果；已有基线记录时不要输出 step 0。仅打印文字、退出码或将预期复制为观察不能作为验证。',
         '结束时只输出 JSON。通过时为 {"status":"passed","observed":"整体实际结果"}；失败或环境不可用为 {"status":"blocked","summary":"失败的步骤或缺少的条件"}。如果实测发现更优方案但会改变用户要求，返回 {"status":"alternative","summary":"发现的问题","alternative":{"summary":"方案","impact":"与原意的差异","validation":{"kind":"operation","operation":"操作","steps":["步骤"],"expected":"预期"}}}，等待审批。',
         JSON.stringify({ commit, validation, requirement: task.requirement.body }),
       ].join('\n'))
+      } finally {
+        if (desktop) await boundedCleanup(desktop.release(), cleanupTimeoutMs)
+      }
       let verdict
       try { verdict = JSON.parse(output.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu, '$1')) } catch {
         throw new Error('验证 Agent 未返回有效的验证结果。')
@@ -240,6 +290,9 @@ export function createHarness(ctx, config, {
         ...development,
         ...(field(development.observed, 500) && { operationEvidence: { observed: development.observed.trim(), assertions, commit } }),
       }
+    },
+    async close() {
+      await desktopEnvironment?.close()
     },
   }
 }
