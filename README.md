@@ -21,9 +21,16 @@ npm run dev
 生产构建与安装包：
 
 ```powershell
-npm run build
-npm run dist
+npm run package:release
 ```
+
+该命令先运行回归测试，再构建 Windows 安装包，核对包内版本并输出安装包路径和 SHA-256。需要升级版本时：
+
+```powershell
+npm run package:release -- 0.2.9
+```
+
+版本号会同步写入 `package.json` 和 `package-lock.json`，不会创建 Git 提交或标签，也不会自动安装。只需构建、不运行测试时仍可使用 `npm run dist`。
 
 如果 Windows 提示安装器以低完整性运行，不要重试或关闭安全软件。请把自己构建、或从可信来源获得的安装包放到正常的本地目录，再从资源管理器打开。隔离工作区里的 `release` 可能继承低完整性标签，不能直接用来运行安装器或做启动验收。
 

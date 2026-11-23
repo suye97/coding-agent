@@ -17,7 +17,8 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.electron.json --noEmit",
     "test": "node --test",
     "test:desktop": "npm run build && node scripts/smoke-electron.mjs",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "package:release": "node scripts/package-release.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.330",
