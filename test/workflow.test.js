@@ -404,18 +404,33 @@ test('a UI request cannot be classified as static checks, while a structural cha
   assert.deepEqual(app.pushes, ['abcdef'])
 })
 
-test('delivery automation can use integration checks without requiring a Feishu operation environment', async t => {
+test('delivery automation upgrades a model operation plan to isolated integration checks', async t => {
   const app = await fixture(t)
-  app.runner.design = async () => ({ ...plan, validation: { kind: 'checks', reason: '运行替身渠道工作流测试和本地裸仓库合并测试' } })
+  app.runner.design = async () => ({ ...plan, validation: {
+    kind: 'operation', operation: '通过替身渠道验证自动交付',
+    steps: ['用临时数据库和裸仓库提交测试需求', '驱动真实状态机并核对交付页'], expected: '任务分支已推送且 master 已合并',
+  } })
   app.runner.verifyOperation = async () => assert.fail('自动交付集成测试不应启动操作验证 Agent')
   app.passChecks()
   app.send('开发需求｜订单\n取消验收环节，验证成功直接 push 到远程分支且合并到 master')
   await app.work()
   await app.work()
-  assert.equal(app.store().inStage('delivered').length, 1)
+  const [delivered] = app.store().inStage('delivered')
+  assert.equal(delivered.plan.validation.kind, 'checks')
   assert.equal(app.verifications.at(-1).operationValidation, undefined)
   assert.deepEqual(app.pushes, ['abcdef'])
   assert.deepEqual(app.merges.map(({ commit }) => commit), ['abcdef'])
+})
+
+test('delivery automation with an independent UI interaction keeps operation evidence mandatory', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.send('开发需求｜订单\n自动交付后点击交付页按钮核对合并结果')
+  await app.work()
+  await app.work()
+  const [delivered] = app.store().inStage('delivered')
+  assert.equal(delivered.plan.validation.kind, 'operation')
+  assert.equal(app.verifications.at(-1).operationValidation.kind, 'operation')
 })
 
 test('development operation evidence on the same commit avoids a duplicate verification agent', async t => {

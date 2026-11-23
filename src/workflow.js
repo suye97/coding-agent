@@ -6,6 +6,7 @@ import { MAX_TASK_ATTACHMENTS, MAX_TASK_ATTACHMENT_BYTES } from './attachments.j
 const evidencePrefix = 'FEISHU_OPERATION_EVIDENCE '
 const observation = value => typeof value === 'string' && value.trim() && value.length <= 500
 const actionable = /界面|页面|屏幕|按钮|弹窗|点击|表单|输入框|交互|复现|运行时|打开|选中|拖拽|下拉|仪表盘|前端|滑动|勾选|切换|筛选|用户(?:可|能|操作)|\b(?:ui|ux|browser|dialog|screen|button|form|click|submit|navigate|repro(?:duce|duction)?|runtime|dashboard|webpage|website|dropdown|log in)\b/iu
+const automaticDelivery = /取消验收|自动交付|(?:push|推送)[\s\S]{0,80}(?:远程|远端|remote)|(?:合并|merge)[\s\S]{0,40}(?:master|main)/iu
 const reworkStages = ['review', 'pushed', 'delivered']
 const imageStages = ['confirm', 'design_queued', 'designing', 'blocked', ...reworkStages]
 const acceptsImage = task => imageStages.includes(task.stage) ||
@@ -19,7 +20,15 @@ function requiresOperation(task) {
 function validationFor(task) {
   const approval = task.alternativeApproval
   const validApproval = approval && approval.requirementVersion === task.requirementVersion && approval.planVersion === task.planVersion
-  const validation = normalizeValidation(validApproval ? approval.proposal.validation : task.plan?.validation)
+  let validation = normalizeValidation(validApproval ? approval.proposal.validation : task.plan?.validation)
+  const deliveryOnly = !requiresOperation(task) && [task.requirement.body, ...(task.comments ?? []), task.rework, task.validationRework]
+    .some(text => automaticDelivery.test(text ?? ''))
+  if (!validApproval && validation?.kind === 'operation' && deliveryOnly) {
+    // 模型可能把自动化集成测试仍声明为 operation。仅对明确的交付状态机需求
+    // 持久化修正分类；独立 UI 要求和已审批替代方案仍必须保留实测证据。
+    validation = { kind: 'checks', reason: '运行替身飞书渠道、临时数据库和本地裸仓库的交付集成测试，核对任务分支推送、master 合并和交付状态。' }
+    task.plan.validation = validation
+  }
   if (!validation || (validation.kind === 'checks' && !validApproval && requiresOperation(task))) {
     throw new Error('缺少适用于原需求的操作验证方案。请补充可执行步骤和预期结果后重新设计。')
   }
