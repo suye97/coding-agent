@@ -55,6 +55,20 @@ test('agent rejects invalid structured plans and undeclared alternative results'
   await assert.rejects(invalidDevelopment.runner.develop(input()), /必须单独提交审批/)
 })
 
+test('delivery automation plans use isolated integration checks instead of recursive Feishu delivery', async () => {
+  const checksPlan = { ...plan, validation: { kind: 'checks', reason: '运行工作流集成测试和真实本地裸仓库测试' } }
+  const { runner, calls } = fixture(checksPlan)
+  const deliveryTask = structuredClone(task)
+  deliveryTask.requirement.body = '取消验收环节，验证成功直接 push 到远程分支且合并到 master'
+  const result = await runner.design(input({ task: deliveryTask }))
+  assert.equal(result.validation.kind, 'checks')
+  assert.match(calls[0].prompt, /Git 分支、提交、推送、合并、交付状态机/)
+  assert.match(calls[0].prompt, /替身渠道、临时数据库和本地裸仓库/)
+  assert.match(calls[0].prompt, /不要把通过飞书再提交一个需求/)
+  assert.match(calls[0].prompt, /真实飞书端到端联调属于独立发布验收/)
+  assert.match(calls[0].prompt, /没有自动化覆盖的真实界面行为/)
+})
+
 test('agent requires model configuration before starting a paid run', async () => {
   let called = false
   const runner = createAgent({ execute: async () => { called = true }, getModel: async () => ({ ...model, apiKey: '' }) })
