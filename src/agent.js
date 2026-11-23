@@ -71,7 +71,7 @@ export function createAgent({ execute, getModel, loadAttachment, gitCommit, prep
 } = {}) {
   const readCommit = gitCommit ?? ((cwd, signal) => execGit(cwd, signal, 'rev-parse', 'HEAD'))
 
-  async function run({ task, project, signal: parentSignal, recordRun, recordSession, recordResult = () => {}, recordOutput = () => {}, recordAssertion }, stage, instructions) {
+  async function run({ task, project, signal: parentSignal, recordRun, recordSession, recordResult = () => {}, recordOutput = () => {}, recordAssertion, electronDist }, stage, instructions) {
     const model = await getModel()
     if (!model?.name || !model.baseUrl || !model.apiKey) throw new Error('请先在设置中完成模型 Base URL、模型名称和 API Key 配置。')
     const cwd = stage === 'design' ? project.path : task.work.worktree
@@ -98,6 +98,7 @@ export function createAgent({ execute, getModel, loadAttachment, gitCommit, prep
       const prompt = await composeImagePrompt(instructions, task, loadAttachment)
       const result = await execute({
         prompt, cwd, stage, resumeSessionId: task.agentSessionId, model, signal,
+        ...(electronDist && { electronDist }),
         onOutput: text => { if (!signal.aborted) { recordOutput(text); activity() } },
         onAssertion: item => { const accepted = recordAssertion?.(item); if (accepted) step(); activity() },
         onSession: sessionId => {
@@ -123,21 +124,28 @@ export function createAgent({ execute, getModel, loadAttachment, gitCommit, prep
       const assertions = []
       const { task, commit, validation, baselineObserved, checkpoint, recordCheckpoint, recordPreflight } = input
       recordPreflight?.('checking')
-      await prepareOperation({ cwd: task.work.worktree, signal: input.signal })
-      recordPreflight?.('ready')
-      const output = await run({ ...input, recordAssertion: item => {
-        if (assertions.length < 64) assertions.push(item)
-        return recordCheckpoint?.(item)
-      } }, 'verify', [
+      const environment = await prepareOperation({ cwd: task.work.worktree, signal: input.signal })
+      const instructions = [
         '你是交付验证 Agent。在当前任务工作树启动已提交的版本，实际操作应用并核对结果。只执行 validation.steps 中的交付必检步骤，不要自行扩大为完整应用巡检；额外探索不能阻塞交付。需要时可编写临时验证程序，放在工作树之外，结束后清理你启动的进程和临时文件。现有项目文件、Git 引用和配置保持原样。不要推送、部署、连接真实客户服务或改动用户正在使用的应用。',
         '模型服务、应用配置和目标项目之外的运行环境不属于验证 Agent 的修复范围。不要修改模型、endpoint、权限或仓库配置。环境未就绪时一次确认后立即报告具体阻塞，不要反复尝试登录、索取凭据或扩大权限。',
         '主程序已对存在 package-lock.json 的 Node 项目完成依赖预检，并用锁文件指纹缓存结果，不要重复执行 npm ci。没有可用锁文件或其他类型项目可按项目约定准备依赖。不要复用其他工作树的依赖，不要修改 package.json 或锁文件。',
+        ...(environment?.electronDist ? ['当前工作树的 Electron 已通过本机启动检查。启动当前版本时，为启动命令设置 ELECTRON_OVERRIDE_DIST_PATH=$FEISHU_VERIFY_ELECTRON_DIST（PowerShell 中读取 $env:FEISHU_VERIFY_ELECTRON_DIST），以当前工作树为应用目录，并传入独立的临时 --user-data-dir。不要将此覆盖用于其他工作树或缺陷基线。'] : []),
         `按顺序执行下方每个步骤，使用目标项目自己的真实运行环境。浏览器替身、模拟实现或源码检查只能作诊断。缺少环境或权限时报告阻塞。缺陷任务${baselineObserved ? '已有同一基线的实测复现记录，本次只验证修复结果。' : '在独立临时目录实际复现 baseCommit 的缺陷，再验证修复。'}`,
         ...(checkpoint?.completedSteps ? [`以下是同一提交、同一方案已经由主程序核验的步骤，不要重复输出其证据。恢复应用状态可做必要导航；如果已完成步骤创建的临时数据或运行状态已不存在，先按原步骤幂等重建前置状态，核对已有数据以避免重复创建，再从下一个未完成步骤继续实测并保留原步骤编号。前置状态重建不是新的通过证据。无法重建时报告具体阻塞：${JSON.stringify(checkpoint)}`] : []),
         '证据由工具输出采集。让实际操作程序仅在对应行为断言通过后向 stdout 写一行 FEISHU_AGENT_OBSERVATION 加 JSON，字段为 commit、step（按步骤从 1 编号）、observed（具体观察，最多 500 字符）。仅当本次实际复现缺陷基线时才输出 step 为 0、commit 为 baseCommit、observed 为复现结果；已有基线记录时不要输出 step 0。仅打印文字、退出码或将预期复制为观察不能作为验证。',
         '结束时只输出 JSON。通过时为 {"status":"passed","observed":"整体实际结果"}；失败或环境不可用为 {"status":"blocked","summary":"失败的步骤或缺少的条件"}。如果实测发现更优方案但会改变用户要求，返回 {"status":"alternative","summary":"发现的问题","alternative":{"summary":"方案","impact":"与原意的差异","validation":{"kind":"operation","operation":"操作","steps":["步骤"],"expected":"预期"}}}，等待审批。',
         JSON.stringify({ commit, validation, requirement: task.requirement.body }),
-      ].join('\n'))
+      ].join('\n')
+      let output
+      try {
+        recordPreflight?.('ready')
+        output = await run({ ...input, electronDist: environment?.electronDist, recordAssertion: item => {
+          if (assertions.length < 64) assertions.push(item)
+          return recordCheckpoint?.(item)
+        } }, 'verify', instructions)
+      } finally {
+        await environment?.dispose?.().catch(() => {})
+      }
       let verdict
       try { verdict = JSON.parse(output.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu, '$1')) } catch {
         throw new Error('验证 Agent 未返回有效的验证结果。')
