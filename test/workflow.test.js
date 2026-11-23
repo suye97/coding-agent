@@ -218,8 +218,48 @@ test('verification agent claims without matching tool evidence block delivery', 
   app.send('开发需求｜订单\n点击保存后刷新页面')
   await app.work()
   await app.work()
-  assert.match(app.store().inStage('blocked')[0].error, /待验提交匹配/)
+  assert.match(app.store().inStage('blocked')[0].error, /待验提交匹配.*已接受 0\/2 步.*1 条提交不匹配/)
+  assert.doesNotMatch(app.store().inStage('blocked')[0].error, /缺少基线复现的工具记录|未收到本轮工具输出/)
   assert.deepEqual(app.pushes, [])
+})
+
+test('evidence rejection reports missing tool records without blocking on unrelated baseline or duplicate resumed steps', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.setOperationReports(() => [])
+  app.runner.verifyOperation = async ({ recordRun, recordPreflight }) => {
+    recordPreflight('ready')
+    recordRun('verify-child', 'workspace')
+    return { observed: '模型自述已完成界面操作', assertions: [] }
+  }
+  app.send('开发需求｜订单\n点击保存按钮后显示已更新')
+  await app.work()
+  await app.work()
+  const [blocked] = app.store().inStage('blocked')
+  assert.match(blocked.error, /未收到本轮工具输出中的逐步证据/)
+  assert.doesNotMatch(blocked.error, /缺少基线复现的工具记录/)
+})
+
+test('partial accepted evidence does not count returned duplicate steps as new rejections', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.setOperationReports(() => [])
+  const assertion = (id, step) => ({ id, sha256: 'a'.repeat(64),
+    line: JSON.stringify({ commit: 'abcdef', step, observed: `实测 ${step}` }) })
+  app.runner.verifyOperation = async input => {
+    input.recordPreflight('ready')
+    input.recordRun('verify-child', 'workspace')
+    const first = assertion('step-1', 1)
+    input.recordCheckpoint(first)
+    return { observed: '尚未完成', assertions: [first] }
+  }
+  app.send('开发需求｜订单\n点击保存按钮后显示已更新')
+  await app.work()
+  await app.work()
+  const [blocked] = app.store().inStage('blocked')
+  assert.match(blocked.error, /已接受 1\/2 步/)
+  assert.match(blocked.error, /其中 0 条提交不匹配，0 条步骤编号不适用/)
+  assert.deepEqual(blocked.operationCheckpoint.completedSteps, [1])
 })
 
 test('passing compile output and agent assertions cannot satisfy UI operation validation', async t => {

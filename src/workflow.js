@@ -695,7 +695,15 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
             }
             const recordCheckpoint = assertion => {
               const next = agentObservationProgress(operationValidation, [...checkpoint.assertions, assertion], result.commit, baseline)
-              if (next.accepted.length === checkpoint.assertions.length) return false
+              if (next.accepted.length === checkpoint.assertions.length) {
+                checkpoint.rejectedSteps = [...checkpoint.rejectedSteps ?? [], {
+                  step: (() => { try { return JSON.parse(assertion?.line)?.step } catch {} })() ?? null,
+                  commit: (() => { try { return JSON.parse(assertion?.line)?.commit } catch {} })() ?? null,
+                  validOutput: typeof assertion?.id === 'string' && /^[a-f0-9]{64}$/u.test(assertion?.sha256),
+                }].slice(-8)
+                saveCheckpoint()
+                return false
+              }
               checkpoint.assertions = next.accepted
               checkpoint.completedSteps = next.steps.map((_, index) => index + 1)
               checkpoint.baselineReproduced = next.observations.length > next.steps.length
@@ -727,8 +735,33 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
               persist('manual_review')
               return
             }
-            task.operationEvidence = bindEvidenceIdentity(agentOperationEvidence(operationValidation,
-              { ...evidence, assertions: [...checkpoint.assertions, ...evidence.assertions] }, result.commit, task.attempt, baseline), task, operationValidation)
+            try {
+              task.operationEvidence = bindEvidenceIdentity(agentOperationEvidence(operationValidation,
+                { ...evidence, assertions: [...checkpoint.assertions, ...evidence.assertions] }, result.commit, task.attempt, baseline), task, operationValidation)
+            } catch (error) {
+              if (error instanceof Error && /逐步工具记录|基线复现/u.test(error.message)) {
+                // Incomplete resumed evidence is revalidated by the SDK itself; only live
+                // observations rejected by recordCheckpoint belong in this diagnostic.
+                const accepted = new Set(checkpoint.assertions.map(item => item.id))
+                const rejected = (evidence.assertions ?? []).filter(item => !accepted.has(item.id)).map(item => {
+                  try {
+                    const record = JSON.parse(item.line)
+                    return { step: typeof record.step === 'number' && Number.isInteger(record.step) ? record.step : null, commit: record.commit }
+                  } catch { return { step: null, commit: null } }
+                })
+                const wrongStep = rejected.filter(item => item.step === null || item.step > validation.steps.length ||
+                  item.step < (operationValidation.type === 'fix' && !baseline ? 0 : 1)).length
+                const commitMismatch = rejected.filter(item => typeof item.step === 'number' && Number.isInteger(item.step) &&
+                  item.step >= 0 && item.step <= validation.steps.length && !wrongStep &&
+                  item.commit !== (item.step === 0 ? operationValidation.baseCommit : result.commit)).length
+                error.message += ` 主程序已接受 ${checkpoint.completedSteps.length}/${validation.steps.length} 步，验证 Agent 返回 ${evidence.assertions?.length ?? 0} 条工具记录，其中 ${commitMismatch} 条提交不匹配，${wrongStep} 条步骤编号不适用，${rejected.length - commitMismatch - wrongStep} 条缺少有效工具标识或观察结果。`
+                if (operationValidation.type === 'fix' && !baseline && !checkpoint.baselineReproduced) error.message += ' 缺少基线复现的工具记录。'
+                if (!evidence.assertions?.length) error.message += ' 未收到本轮工具输出中的逐步证据，模型自述不能代替实测记录。'
+                if (task.attempt.stopReason === 'max_output_tokens') error.message += ' 模型输出达到长度上限，记录可能不完整。'
+                if (checkpointError) error.message += ` 检查点保存失败：${checkpointError instanceof Error ? checkpointError.message.slice(0, 200) : '请重试。'}`
+              }
+              throw error
+            }
             persist('verifying')
           }
         }
