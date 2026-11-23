@@ -1,7 +1,7 @@
 {
   "name": "feishu-delivery-desktop-app",
   "productName": "需求交付台",
-  "version": "0.2.5",
+  "version": "0.2.7",
   "private": true,
   "type": "module",
   "description": "独立运行的飞书需求开发、验证与交付桌面应用",

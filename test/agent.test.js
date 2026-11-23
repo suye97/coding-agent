@@ -76,11 +76,30 @@ test('verification returns only observation assertions emitted by real tool resu
   assert.doesNotMatch(calls[0].prompt, /profile|Provider|宿主/)
 })
 
-test('verification runs dependency preflight before starting the agent', async () => {
-  let called = false
-  const { runner } = fixture(plan, { prepareOperation: async () => { throw new Error('依赖未就绪') } })
-  await assert.rejects(runner.verifyOperation(input({ commit: 'commit-a', validation })), /依赖未就绪/)
-  assert.equal(called, false)
+test('verification leaves preflight pending and skips the model when the runtime is missing', async () => {
+  const progress = []
+  const { runner, calls } = fixture(plan, { prepareOperation: async () => { throw new Error('Electron 运行时未就绪') } })
+  await assert.rejects(runner.verifyOperation(input({ commit: 'commit-a', validation, recordPreflight: stage => progress.push(stage) })), /Electron 运行时未就绪/)
+  assert.deepEqual(progress, ['checking'])
+  assert.equal(calls.length, 0)
+})
+
+test('verification uses the prepared Electron distribution and releases it when the agent fails', async () => {
+  const events = []
+  const electronDist = 'D:/isolated/electron-dist'
+  const runner = createAgent({
+    getModel: async () => model,
+    prepareOperation: async () => ({ electronDist, dispose: async () => events.push('disposed') }),
+    execute: async request => {
+      assert.equal(request.electronDist, electronDist)
+      assert.match(request.prompt, /FEISHU_VERIFY_ELECTRON_DIST/)
+      assert.doesNotMatch(request.prompt, /D:\/isolated\/electron-dist/)
+      events.push('model')
+      throw new Error('验证调用中断')
+    },
+  })
+  await assert.rejects(runner.verifyOperation(input({ commit: 'commit-a', validation, recordPreflight: stage => events.push(stage) })), /验证调用中断/)
+  assert.deepEqual(events, ['checking', 'ready', 'model', 'disposed'])
 })
 
 test('verification startup budget aborts an agent that never initializes', async () => {
@@ -92,6 +111,31 @@ test('verification startup budget aborts an agent that never initializes', async
   const runner = createAgent({ execute, getModel: async () => model, prepareOperation: async () => {}, verificationStartupTimeoutMs: 15 })
   await assert.rejects(runner.verifyOperation(input({ commit: 'commit-a', validation })), /启动超时/)
   assert.equal(observedSignal.aborted, true)
+})
+
+test('verification initializes resumed sessions and cancels the startup budget on first protocol event', async () => {
+  let calls = 0
+  let output
+  const resumed = structuredClone(task)
+  resumed.agentSessionId = 'existing-session'
+  const { runner } = fixture({ status: 'passed', observed: '实际界面结果正确' }, {
+    execute: async request => {
+      calls++
+      assert.equal(request.resumeSessionId, 'existing-session')
+      // The transport sends this even when the resumed ID is unchanged.
+      await new Promise(resolve => setTimeout(resolve, 5))
+      request.onSession('existing-session')
+      request.onOutput('已启动 Electron，正在核对界面。')
+      request.onAssertion({ id: 'tool-1', line: JSON.stringify({ commit: 'commit-a', step: 1, observed: '界面实际结果正确' }), sha256: 'a'.repeat(64) })
+      await new Promise(resolve => setTimeout(resolve, 25))
+      return { text: JSON.stringify({ status: 'passed', observed: '实际界面结果正确' }), sessionId: 'existing-session', stopReason: 'completed' }
+    },
+    verificationStartupTimeoutMs: 10,
+    prepareOperation: async () => {},
+  })
+  output = await runner.verifyOperation(input({ task: resumed, commit: 'commit-a', validation }))
+  assert.equal(output.observed, '实际界面结果正确')
+  assert.equal(calls, 1)
 })
 
 test('agent cancellation reaches the utility process and preserves structured errors', async () => {

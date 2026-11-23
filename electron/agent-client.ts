@@ -7,6 +7,7 @@ interface RunInput {
   prompt: string
   cwd: string
   stage: 'design' | 'develop' | 'verify'
+  electronDist?: string
   resumeSessionId?: string
   model: { name: string; baseUrl: string; apiKey: string }
   signal: AbortSignal
@@ -79,7 +80,7 @@ export class AgentProcess {
       input.signal.addEventListener('abort', abort, { once: true })
       child.postMessage({ type: 'start', id, input: {
         prompt: input.prompt, cwd: input.cwd, stage: input.stage, resumeSessionId: input.resumeSessionId,
-        model: input.model.name, baseUrl: input.model.baseUrl, apiKey: input.model.apiKey,
+        electronDist: input.electronDist, model: input.model.name, baseUrl: input.model.baseUrl, apiKey: input.model.apiKey,
       } })
     })
   }

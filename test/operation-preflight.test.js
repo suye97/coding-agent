@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { prepareOperationEnvironment } from '../src/operation-preflight.js'
+import { prepareOperationElectron } from '../src/operation-electron.js'
 
 async function fixture(t, lockfile = true) {
   const directory = await mkdtemp(join(tmpdir(), 'feishu-preflight-'))
@@ -71,6 +72,74 @@ test('a damaged dependency cache is checked and reinstalled', async t => {
   assert.equal((await prepareOperationEnvironment(input)).cached, true)
   assert.equal(installs, 2)
   assert.equal(checks, 3)
+})
+
+const electronExecutable = { win32: 'electron.exe', linux: 'electron', darwin: 'Electron.app/Contents/MacOS/Electron' }[process.platform]
+
+async function electronFixture(t) {
+  const cwd = await fixture(t)
+  const dependency = join(cwd, 'node_modules', 'electron')
+  const binary = join(dependency, 'dist', electronExecutable)
+  await mkdir(dependency, { recursive: true })
+  await writeFile(join(cwd, 'package.json'), JSON.stringify({ name: 'fixture', devDependencies: { electron: '40.10.6' } }))
+  await writeFile(join(dependency, 'package.json'), '{"version":"40.10.6"}')
+  const installer = join(dependency, 'install.js')
+  await writeFile(installer, '')
+  const installBinary = async () => {
+    await mkdir(dirname(binary), { recursive: true })
+    await writeFile(binary, '')
+    await writeFile(join(dependency, 'path.txt'), electronExecutable)
+  }
+  return { cwd, binary, installer, installBinary }
+}
+
+test('npm cache hits still repair and check a missing Electron binary', { skip: !electronExecutable }, async t => {
+  const { cwd, binary, installer, installBinary } = await electronFixture(t)
+  const commands = []
+  let installs = 0
+  const execute = async (file, args, { env }) => {
+    commands.push(file)
+    assert.equal(env.ELECTRON_RUN_AS_NODE, undefined)
+    assert.equal(env.ELECTRON_SKIP_BINARY_DOWNLOAD, undefined)
+    assert.equal(env.ELECTRON_OVERRIDE_DIST_PATH, undefined)
+    if (file === 'node') {
+      assert.deepEqual(args, [installer])
+      await installBinary()
+      return { stdout: '' }
+    }
+    assert.equal(file, binary)
+    assert.equal(args[0], '--version')
+    assert.match(args[1], /^--user-data-dir=/)
+    return { stdout: 'v40.10.6\n' }
+  }
+  const input = {
+    cwd, check: async () => {}, prepareElectron: options => prepareOperationElectron({ ...options, execute }),
+    install: async args => { installs++; assert.ok(args.includes('--include=dev')) },
+  }
+  assert.equal((await prepareOperationEnvironment(input)).cached, false)
+  await rm(binary)
+  const second = await prepareOperationEnvironment(input)
+  assert.equal(second.cached, true)
+  assert.deepEqual(commands, ['node', binary, 'node', binary])
+  assert.equal(installs, 1)
+})
+
+test('Electron preflight reports a missing binary when the installer exits without creating it', { skip: !electronExecutable }, async t => {
+  const { cwd } = await electronFixture(t)
+  await assert.rejects(prepareOperationElectron({ cwd, execute: async () => ({ stdout: '' }) }), /安装后仍缺少可执行文件/)
+})
+
+test('Windows Electron preflight provides and cleans an independent distribution when the local binary cannot start', { skip: process.platform !== 'win32' }, async t => {
+  const { cwd, binary, installBinary } = await electronFixture(t)
+  await installBinary()
+  const runtime = await prepareOperationElectron({ cwd, execute: async file => {
+    if (file === binary) throw new Error('worktree binary could not start')
+    await access(file)
+    return { stdout: 'v40.10.6' }
+  } })
+  assert.notEqual(runtime.electronDist, dirname(binary))
+  await runtime.dispose()
+  await assert.rejects(access(runtime.electronDist), { code: 'ENOENT' })
 })
 
 test('failed dependency installation is not cached and can be retried', async t => {

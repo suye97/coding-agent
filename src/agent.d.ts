@@ -3,6 +3,7 @@ export interface AgentInput {
   prompt: string
   cwd: string
   stage: 'design' | 'develop' | 'verify'
+  electronDist?: string
   resumeSessionId?: string
   model: AgentModel
   signal: AbortSignal

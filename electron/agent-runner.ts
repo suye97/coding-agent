@@ -13,6 +13,7 @@ interface StartMessage {
     prompt: string
     cwd: string
     stage: 'design' | 'develop' | 'verify'
+    electronDist?: string
     resumeSessionId?: string
     model: string
     baseUrl: string
@@ -81,18 +82,23 @@ async function run(message: StartMessage) {
         ANTHROPIC_API_KEY: input.apiKey,
         ANTHROPIC_AUTH_TOKEN: undefined,
         CLAUDE_AGENT_SDK_CLIENT_APP: 'feishu-delivery-desktop/0.2.0',
-        ELECTRON_RUN_AS_NODE: '1',
+        ELECTRON_RUN_AS_NODE: undefined,
+        FEISHU_VERIFY_ELECTRON_DIST: input.stage === 'verify' ? input.electronDist : undefined,
+        ...(input.stage === 'verify' && input.electronDist && { ELECTRON_OVERRIDE_DIST_PATH: undefined }),
       },
     }
     stream = query({ prompt: input.prompt, options })
     let finalText = ''
     let sessionId = input.resumeSessionId
+    let initialized = false
     for await (const event of stream as AsyncIterable<SDKMessage>) {
       if (abort.signal.aborted) break
-      if ('session_id' in event && event.session_id && event.session_id !== sessionId) {
-        sessionId = event.session_id
-        send({ type: 'session', id, sessionId })
+      // Every SDK event, including a resumed init, marks this invocation as started.
+      if (!initialized) {
+        initialized = true
+        send({ type: 'session', id, sessionId: event.session_id ?? sessionId })
       }
+      if ('session_id' in event && event.session_id) sessionId = event.session_id
       if (event.type === 'stream_event' && !event.parent_tool_use_id && event.event.type === 'content_block_delta' && event.event.delta.type === 'text_delta') {
         send({ type: 'output', id, text: event.event.delta.text })
       }
