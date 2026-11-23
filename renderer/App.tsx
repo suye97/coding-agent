@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ConfigInput, ProjectConfig, PublicConfig, TaskDetail, TaskSummary } from '../electron/shared'
+import { Icon } from './Icon.js'
 import { SettingsDrawer } from './SettingsDrawer.js'
 
 const stages: Record<string, string> = {
@@ -13,15 +14,6 @@ type Tab = typeof tabs[number]
 type HistoryEntry = TaskDetail['history'][number] & {
   plan?: { summary: string; scope: string; risks: string; verification: string }
   result?: { branch?: string; commit?: string; changes?: string; checks?: Array<{ label: string; passed: boolean; output?: string }>; operationEvidence?: { operation?: string; observed?: string; steps?: Array<{ action: string; observed: string }> } }
-}
-
-function Icon({ name }: { name: 'plus' | 'settings' | 'search' | 'branch' | 'check' | 'close' }) {
-  const paths = {
-    plus: 'M12 5v14M5 12h14', settings: 'M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6',
-    search: 'm20 20-4-4m2-5a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z', branch: 'M6 3v12m0 0a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm12-9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm0 6v3a6 6 0 0 1-6 6H6',
-    check: 'm5 12 4 4L19 6', close: 'M6 6l12 12M18 6 6 18',
-  }
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d={paths[name]} /></svg>
 }
 
 function StageBadge({ stage }: { stage: string }) {

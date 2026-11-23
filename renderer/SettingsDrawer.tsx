@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { ConfigInput, ProjectConfig, PublicConfig } from '../electron/shared'
+import { Icon } from './Icon.js'
 
 export function SettingsDrawer({ config, onClose, onSave }: { config: PublicConfig; onClose: () => void; onSave: (input: ConfigInput) => Promise<void> }) {
   const [form, setForm] = useState<ConfigInput>({ enabled: config.enabled, appId: config.appId, userId: config.userId, dataDirectory: config.dataDirectory, tapdCardSource: config.tapdCardSource ?? { chatId: '', senderId: '', operatorId: '' }, model: { baseUrl: config.model.baseUrl, name: config.model.name }, projects: config.projects })
@@ -26,7 +27,7 @@ export function SettingsDrawer({ config, onClose, onSave }: { config: PublicConf
   }
   return <div className="drawer-layer" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
     <aside className="settings-drawer" role="dialog" aria-modal="true" aria-label="应用设置">
-      <header><div><h2>设置</h2><p>渠道、模型与目标仓库</p></div><button className="icon-button" onClick={onClose} aria-label="关闭设置">×</button></header>
+      <header><div><h2>设置</h2><p>渠道、模型与目标仓库</p></div><button className="icon-button" onClick={onClose} aria-label="关闭设置"><Icon name="close" /></button></header>
       <nav>{([['channel', '飞书渠道'], ['model', '模型'], ['projects', '项目仓库']] as const).map(([id, label]) => <button key={id} className={section === id ? 'active' : ''} onClick={() => setSection(id)}>{label}</button>)}</nav>
       <div className="settings-body">
         {section === 'channel' && <>

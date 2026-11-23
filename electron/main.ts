@@ -14,7 +14,7 @@ let runtime: Runtime | undefined
 async function createWindow() {
   window = new BrowserWindow({
     width: 1440, height: 940, minWidth: 1000, minHeight: 680,
-    backgroundColor: '#20292d', show: false, title: '需求交付台',
+    backgroundColor: '#f5f7fb', show: false, title: '需求交付台',
     webPreferences: {
       preload: fileURLToPath(new URL('./preload.cjs', import.meta.url)),
       contextIsolation: true, nodeIntegration: false, sandbox: true, devTools: !app.isPackaged,
