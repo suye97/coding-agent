@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { PassThrough } from 'node:stream'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { createHarness } from '../src/harness.js'
 
@@ -403,6 +406,34 @@ test('Host prepares an isolated Desktop before activation and releases it afterw
   })
   const result = await runner.verifyOperation({ ...input, commit: 'commit', validation: { ...validation, operation: 'DSH Desktop 筛选订单' } })
   assert.equal(result.observed, 'Desktop 实测通过')
+  assert.equal(released, true)
+})
+
+test('DSH bundle UI verification uses managed Desktop even when the request omits the word Desktop', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'harness-dsh-project-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await writeFile(join(directory, 'package.json'), JSON.stringify({ dsh: { bundle: { patch: './cordis.patch.yml' } } }))
+  const { ctx, input } = fixture([{ status: 'passed', observed: '设置页布局实测通过' }])
+  input.task = { ...input.task, requirement: { body: '优化设置页宽窄窗口布局' },
+    work: { ...input.task.work, worktree: directory } }
+  input.project = { ...input.project, path: directory }
+  let prepared = false
+  let released = false
+  const runner = createHarness(ctx, { developmentProvider: 'workspace', providerPoliciesVerified: true }, {
+    prepareOperation: async () => {},
+    desktopEnvironment: {
+      async prepare({ worktree }) {
+        assert.equal(worktree, directory)
+        prepared = true
+        return { fingerprint: 'fingerprint', profileDirectory: join(directory, 'profile'), async release() { released = true } }
+      },
+    },
+  })
+  const result = await runner.verifyOperation({ ...input, commit: 'commit', validation: {
+    kind: 'operation', operation: '调整设置页窗口宽度', steps: ['拖动窗口边缘'], expected: '设置页布局正确切换',
+  } })
+  assert.equal(result.observed, '设置页布局实测通过')
+  assert.equal(prepared, true)
   assert.equal(released, true)
 })
 

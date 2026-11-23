@@ -83,7 +83,7 @@ Agent 证据从 Codex 命令执行或 Claude Code Bash 工具结果采集，把�
 
 ### 可复用的隔离 Desktop 验证环境
 
-明确要求 DSH Desktop 的任务不再让 Agent 创建 profile、安装 Provider 或处理登录。Host 从 `desktopTemplateDirectory/profile` 复制专用测试环境到 `<dataDirectory>/desktop-validation/tasks/<任务编号>/profile`，用 `desktopExecutable` 和 Electron 的 `--user-data-dir=<隔离目录>` 启动独立实例。每个任务使用自己的目录，不共享运行实例；同任务重试保留 profile，跨任务不复用目录。模板清单和全部模板文件的 SHA-256 变化时重建副本，健康检查失败也会停止实例并在下次重试重建。Agent 完成后 Host 停止自己启动的进程树，插件停止时也会清理活动实例。
+明确要求 DSH Desktop 的任务，以及待验提交 `package.json` 声明 `dsh.bundle.patch` 或 `dsh.client` 的界面任务，不再让 Agent 创建 profile、安装 Provider 或处理登录。即使需求只写“设置页”或“窗口布局”，也会按 DSH 仓库类型进入 Host 隔离环境。Host 从 `desktopTemplateDirectory/profile` 复制专用测试环境到 `<dataDirectory>/desktop-validation/tasks/<任务编号>/profile`，用 `desktopExecutable` 和 Electron 的 `--user-data-dir=<隔离目录>` 启动独立实例。每个任务使用自己的目录，不共享运行实例；同任务重试保留 profile，跨任务不复用目录。模板清单和全部模板文件的 SHA-256 变化时重建副本，健康检查失败也会停止实例并在下次重试重建。Agent 完成后 Host 停止自己启动的进程树，插件停止时也会清理活动实例。
 
 模板根目录必须包含 `feishu-desktop-environment.json`：
 

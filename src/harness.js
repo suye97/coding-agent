@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { createModelOutputObserver } from './model-output.js'
 import { composeImagePrompt } from './attachment-prompt.js'
 import { prepareOperationEnvironment } from './operation-preflight.js'
@@ -36,6 +38,18 @@ async function execGit(cwd, signal, ...args) {
 }
 
 const field = (value, limit = 300) => typeof value === 'string' && value.trim() && value.length <= limit
+
+async function requiresDesktopEnvironment(task, validation) {
+  const text = [task.requirement.body, validation.operation, validation.expected, ...validation.steps].join('\n')
+  if (/\b(?:DSH\s+Desktop|Desktop)\b/iu.test(text)) return true
+  // “设置页”“窗口布局”等需求不一定重复写 Desktop；DSH bundle 本身就是运行环境标识。
+  try {
+    const manifest = JSON.parse(await readFile(join(task.work.worktree, 'package.json'), 'utf8'))
+    return Boolean(manifest.dsh?.bundle?.patch || manifest.dsh?.client)
+  } catch {
+    return false
+  }
+}
 
 export function normalizeValidation(value) {
   if (value?.kind === 'checks' && field(value.reason)) return { kind: 'checks', reason: value.reason.trim() }
@@ -212,7 +226,7 @@ export function createHarness(ctx, config, {
       const { task, commit, validation, baselineObserved, checkpoint, recordCheckpoint, recordPreflight } = input
       recordPreflight?.('checking')
       await prepareOperation({ cwd: task.work.worktree, signal: input.signal })
-      const needsDesktop = /\b(?:DSH\s+Desktop|Desktop)\b/iu.test([task.requirement.body, validation.operation, validation.expected, ...validation.steps].join('\n'))
+      const needsDesktop = await requiresDesktopEnvironment(task, validation)
       let desktop
       if (needsDesktop) {
         if (!desktopEnvironment) throw new Error('当前任务要求 DSH Desktop 实测，但 Host 未配置可复用的隔离验证环境。')
