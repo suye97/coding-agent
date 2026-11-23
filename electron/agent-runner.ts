@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { toolActivityKind } from '../src/agent-activity.js'
 
 interface StartMessage {
   type: 'start'
@@ -91,6 +92,19 @@ async function run(message: StartMessage) {
     let finalText = ''
     let sessionId = input.resumeSessionId
     let initialized = false
+    const activities = new Map<string, { kind: string; status: string }>()
+    const startActivity = (toolId: unknown, name: unknown) => {
+      if (typeof toolId !== 'string' || activities.has(toolId)) return
+      const item = { kind: toolActivityKind(name), status: 'running' }
+      activities.set(toolId, item)
+      send({ type: 'activity', id, item: { id: toolId, ...item } })
+    }
+    const finishActivity = (toolId: string, failed: boolean) => {
+      const current = activities.get(toolId)
+      if (!current || current.status !== 'running') return
+      current.status = failed ? 'error' : 'completed'
+      send({ type: 'activity', id, item: { id: toolId, ...current } })
+    }
     for await (const event of stream as AsyncIterable<SDKMessage>) {
       if (abort.signal.aborted) break
       // Every SDK event, including a resumed init, marks this invocation as started.
@@ -99,6 +113,14 @@ async function run(message: StartMessage) {
         send({ type: 'session', id, sessionId: event.session_id ?? sessionId })
       }
       if ('session_id' in event && event.session_id) sessionId = event.session_id
+      if (event.type === 'stream_event' && !event.parent_tool_use_id && event.event.type === 'content_block_start' && event.event.content_block.type === 'tool_use') {
+        startActivity(event.event.content_block.id, event.event.content_block.name)
+      }
+      if (event.type === 'assistant' && !event.parent_tool_use_id && Array.isArray(event.message.content)) {
+        for (const block of event.message.content) {
+          if (block.type === 'tool_use') startActivity(block.id, block.name)
+        }
+      }
       if (event.type === 'stream_event' && !event.parent_tool_use_id && event.event.type === 'content_block_delta' && event.event.delta.type === 'text_delta') {
         send({ type: 'output', id, text: event.event.delta.text })
       }
@@ -106,7 +128,9 @@ async function run(message: StartMessage) {
         const content = event.message.content
         if (!Array.isArray(content)) continue
         for (const block of content) {
-          if (block.type !== 'tool_result' || block.is_error) continue
+          if (block.type !== 'tool_result') continue
+          finishActivity(block.tool_use_id, Boolean(block.is_error))
+          if (block.is_error) continue
           const text = textFromToolResult(block.content)
           for (const line of text.split(/\r?\n/u)) {
             if (!line.startsWith('FEISHU_AGENT_OBSERVATION ') || line.length > 10_000) continue

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgent } from '../src/agent.js'
+import { normalizeActivity, toolActivityKind } from '../src/agent-activity.js'
 
 const model = { name: 'test-model', baseUrl: 'https://example.invalid', apiKey: 'unit-test-only' }
 const validation = { kind: 'operation', operation: '筛选订单', steps: ['点击筛选'], expected: '只显示已完成订单' }
@@ -22,6 +23,7 @@ function fixture(outputs, options = {}) {
     calls.push(request)
     request.onSession('session-1')
     request.onOutput('正在检查项目')
+    if (options.activity) request.onActivity?.(options.activity)
     if (options.assertion) request.onAssertion(options.assertion)
     const output = remaining.length > 1 ? remaining.shift() : remaining[0]
     return { text: typeof output === 'string' ? output : JSON.stringify(output), sessionId: 'session-1', stopReason: 'completed' }
@@ -45,6 +47,19 @@ test('independent agent streams text, persists its SDK session and resumes devel
   await runner.develop(input({ task: first.task }))
   assert.equal(calls[1].cwd, task.work.worktree)
   assert.equal(calls[1].resumeSessionId, 'session-1')
+})
+
+test('agent forwards bounded activity categories without tool payloads', async () => {
+  const activity = { id: 'tool-1', kind: 'edit', status: 'running' }
+  const { runner } = fixture(plan, { activity })
+  const activities = []
+  await runner.design(input({ recordActivity: item => activities.push(item) }))
+  assert.deepEqual(activities, [activity])
+  assert.equal(toolActivityKind('Read'), 'read')
+  assert.equal(toolActivityKind('Bash'), 'command')
+  assert.equal(toolActivityKind('UnknownTool'), 'other')
+  assert.deepEqual(normalizeActivity({ ...activity, input: 'private path', output: 'private output' }), activity)
+  assert.equal(normalizeActivity({ ...activity, kind: 'private-tool-name' }), undefined)
 })
 
 test('agent rejects invalid structured plans and undeclared alternative results', async () => {

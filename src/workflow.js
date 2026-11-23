@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { isOperatorId, operatorIds } from './operators.js'
 import { normalizeAlternative, normalizeValidation } from './agent.js'
+import { normalizeActivity } from './agent-activity.js'
 import { MAX_TASK_ATTACHMENTS, MAX_TASK_ATTACHMENT_BYTES } from './attachments.js'
 
 const evidencePrefix = 'FEISHU_OPERATION_EVIDENCE '
@@ -586,6 +587,25 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
       output = (output + text).slice(-limit).replace(/^[\uDC00-\uDFFF]/u, '')
       outputTimer ??= setTimeout(flushOutput, 400)
     }
+    function recordActivity(item) {
+      const activity = normalizeActivity(item)
+      if (!activity || signal.aborted || task.attempt.status !== 'running') return
+      const activities = [...task.attempt.activities ?? []]
+      const index = activities.findIndex(existing => existing.id === activity.id)
+      const next = { ...activity, startedAt: index >= 0 ? activities[index].startedAt : Date.now() }
+      if (index >= 0) activities[index] = next
+      else activities.push(next)
+      task.attempt.activities = activities.slice(-40)
+      try {
+        store.transaction(() => {
+          const latest = store.get(task.id)
+          if (latest?.attempt?.id !== attemptId || latest.attempt.status !== 'running' || latest.stage !== latest.attempt.kind) return
+          store.progress(task, false)
+        })
+      } catch (error) {
+        onError(error)
+      }
+    }
     const recordResult = ({ stopReason }) => {
       flushOutput()
       task.attempt.status = stopReason === 'completed' ? 'completed' : 'error'
@@ -694,7 +714,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
             const verificationTask = candidate ? { ...task, sessionCreated: false, agentSessionId: undefined,
               work: { ...task.work, worktree: candidate.worktree } } : task
             const evidence = await runner.verifyOperation({ task: verificationTask, project, signal, recordRun,
-              recordSession: candidate ? () => {} : recordSession, recordResult, recordOutput,
+              recordSession: candidate ? () => {} : recordSession, recordResult, recordOutput, recordActivity,
               validation: operationValidation, commit: result.commit,
               baselineObserved: Boolean(baseline) || progress.observations.length > progress.steps.length,
               ...(progress.steps.length && { checkpoint: { completedSteps: progress.steps.map((_, index) => index + 1) } }),
@@ -755,7 +775,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
       const project = projects.get(task.project)
       if (!project) throw new Error('当前配置中缺少任务项目。')
       if (task.stage === 'designing') {
-        task.plan = await runner.design({ task, project, signal, recordRun, recordSession, recordResult, recordOutput })
+        task.plan = await runner.design({ task, project, signal, recordRun, recordSession, recordResult, recordOutput, recordActivity })
         task.planVersion++
         if (task.plan?.alternative != null) {
           const proposal = normalizeAlternative(task.plan.alternative)
@@ -780,7 +800,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
       task.work = await repository.prepare({ task, project, signal })
       persist(task.stage)
       if (task.stage === 'developing') {
-        const development = await runner.develop({ task, project, signal, recordRun, recordSession, recordResult, recordOutput })
+        const development = await runner.develop({ task, project, signal, recordRun, recordSession, recordResult, recordOutput, recordActivity })
         if (!development || !['implemented', 'no_change', 'needs_clarification', 'blocked', 'alternative'].includes(development.status) ||
             typeof development.summary !== 'string' || !development.summary.trim() || development.summary.length > 1400) {
           throw new Error('开发委派返回了无效结果。')

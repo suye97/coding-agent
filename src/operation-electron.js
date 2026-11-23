@@ -44,11 +44,23 @@ export async function prepareOperationElectron({ cwd, signal, execute = exec }) 
   if (!(await installed())) {
     const installer = join(directory, 'install.js')
     if (!(await fileType(installer))?.isFile()) throw new Error('UI 验证预检失败：Electron npm 包缺少运行时安装入口。')
-    try {
-      await execute('node', [installer], { ...options, env, timeout: 180_000 })
-    } catch {
-      signal?.throwIfAborted()
-      throw new Error(`UI 验证预检失败：无法准备 Electron ${version} 可执行文件，请检查 Electron 下载缓存或镜像。`)
+    const attempts = env.ELECTRON_MIRROR ? [env] : [env, { ...env, ELECTRON_MIRROR: 'https://npmmirror.com/mirrors/electron/' }]
+    let failure
+    for (const attemptEnv of attempts) {
+      try {
+        // Electron's own Node mode avoids depending on a shell-specific Node installation.
+        // Limit ELECTRON_RUN_AS_NODE to the installer; target runtime probes must stay Electron.
+        await execute(process.execPath, [installer], { ...options, env: { ...attemptEnv, ELECTRON_RUN_AS_NODE: '1' }, timeout: 180_000 })
+        failure = undefined
+        break
+      } catch (error) {
+        signal?.throwIfAborted()
+        failure = error
+      }
+    }
+    if (failure) {
+      const code = String(failure?.code ?? '未知错误').replace(/[^a-z0-9_.-]/giu, '').slice(0, 40) || '未知错误'
+      throw new Error(`UI 验证预检失败：无法下载或安装 Electron ${version} 可执行文件 (${code})，请检查下载缓存、网络和镜像。`)
     }
     if (!(await installed())) throw new Error(`UI 验证预检失败：Electron ${version} 安装后仍缺少可执行文件。`)
   }

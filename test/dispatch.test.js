@@ -19,7 +19,8 @@ test('dispatch reads persisted requirement revisions and results only for the ow
   const store = openStore(dispatchDatabase(config))
   const task = { id: 'ABCDEF12', chatId: 'private-chat', owner: 'private-owner', stage: 'confirm', project: '订单', requirementVersion: 1, requirement: { body: '原始需求' } }
   store.save(task)
-  task.attempt = { id: 'attempt', kind: 'developing', provider: 'workspace', startedAt: 100, heartbeatAt: 200, status: 'running' }
+  task.attempt = { id: 'attempt', kind: 'developing', provider: 'workspace', startedAt: 100, heartbeatAt: 200, status: 'running',
+    activities: [{ id: 'tool-1', kind: 'command', status: 'running', startedAt: 150, command: 'secret command', output: 'private output' }] }
   store.progress(task)
   assert.equal(task.revision, 1)
   task.attempt.status = 'completed'
@@ -35,6 +36,8 @@ test('dispatch reads persisted requirement revisions and results only for the ow
   assert.equal(summary.attempt.provider, 'workspace')
   assert.equal('usage' in summary.attempt, false)
   assert.equal('development' in summary.attempt, false)
+  assert.deepEqual(summary.attempt.activities, [{ id: 'tool-1', kind: 'command', status: 'running', startedAt: 150 }])
+  assert.equal(JSON.stringify(summary.attempt.activities).includes('secret command'), false)
   const { history } = call('detail', { taskId: task.id }).value
   assert.deepEqual(history[1].development, { status: 'implemented', summary: '已修改订单服务' })
   assert.equal('usage' in history[1].attempt, false)

@@ -52,7 +52,7 @@ export interface TaskSummary {
 export interface ProcessEntry {
   revision: number
   stage: string
-  attempt?: { id: string; provider?: string; status?: string; startedAt?: number; stopReason?: string }
+  attempt?: { id: string; provider?: string; status?: string; startedAt?: number; stopReason?: string; activities?: Array<{ id: string; kind: 'read' | 'search' | 'edit' | 'command' | 'plan' | 'other'; status: 'running' | 'completed' | 'error'; startedAt: number | null }> }
   error?: { message: string; current: boolean }
 }
 

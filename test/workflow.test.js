@@ -836,22 +836,24 @@ test('dispatch exposes bounded model text before the result without changing rev
   const app = await fixture(t)
   const started = Promise.withResolvers()
   const terminal = Promise.withResolvers()
-  app.runner.design = async ({ recordRun, recordResult, recordOutput }) => {
+  app.runner.design = async ({ recordRun, recordResult, recordOutput, recordActivity }) => {
     recordRun('stream-child', 'read-only')
-    started.resolve(recordOutput)
+    started.resolve({ recordOutput, recordActivity })
     await terminal.promise
     recordResult({ stopReason: 'completed' })
     return { summary: '最终方案', validation }
   }
   app.send('开发需求｜订单\n需求正文：增加订单状态\n验收条件：旧订单可读取')
   const work = app.work()
-  const recordOutput = await started.promise
+  const { recordOutput, recordActivity } = await started.promise
   const [task] = app.store().inStage('designing')
   const read = (peer = { principal: { kind: 'owner' } }) => app.dispatch('feishuDispatch/detail', { taskId: task.id }, undefined, peer)
   try {
     await app.publish()
     assert.equal(app.store().nextNotice(), undefined)
     recordOutput('正在读取订单模块。')
+    recordActivity({ id: 'tool-1', kind: 'read', status: 'running', input: 'private path', output: 'private output' })
+    recordActivity({ id: 'tool-1', kind: 'read', status: 'completed' })
     const deadline = Date.now() + 2000
     while (!read().value.modelOutputs[task.attempt.id] && Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 25))
@@ -859,6 +861,10 @@ test('dispatch exposes bounded model text before the result without changing rev
     const detail = read().value
     assert.deepEqual(detail.modelOutputs[task.attempt.id], { text: '正在读取订单模块。', truncated: false })
     assert.equal(detail.history.at(-1).attempt.status, 'running')
+    assert.deepEqual(detail.timeline.at(-1).attempt.activities.map(({ id, kind, status }) => ({ id, kind, status })), [
+      { id: 'tool-1', kind: 'read', status: 'completed' },
+    ])
+    assert.equal(JSON.stringify(detail.timeline).includes('private path'), false)
     assert.equal(detail.history.at(-1).revision, task.revision)
     assert.equal(app.store().nextNotice(), undefined)
     assert.doesNotMatch(app.card().text, /正在读取订单模块/)

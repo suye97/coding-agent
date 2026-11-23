@@ -8,6 +8,7 @@ export interface AgentInput {
   model: AgentModel
   signal: AbortSignal
   onOutput(text: string): void
+  onActivity?(item: { id: string; kind: 'read' | 'search' | 'edit' | 'command' | 'plan' | 'other'; status: 'running' | 'completed' | 'error' }): void
   onAssertion(item: { id: string; line: string; sha256: string }): boolean | void
   onSession(sessionId: string): void
 }

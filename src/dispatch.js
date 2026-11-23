@@ -1,6 +1,7 @@
 import { isAbsolute, join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
+import { normalizeActivity } from './agent-activity.js'
 
 const prefix = 'feishuDispatch/'
 const failure = (code, message) => ({ ok: false, error: { code, message, details: {} } })
@@ -16,6 +17,10 @@ function publicAttempt(attempt) {
     id: attempt.id, childId: attempt.childId, kind: attempt.kind, provider: attempt.provider,
     startedAt: attempt.startedAt, finishedAt: attempt.finishedAt, heartbeatAt: attempt.heartbeatAt,
     status: attempt.status, stopReason: attempt.stopReason,
+    activities: Array.isArray(attempt.activities) ? attempt.activities.slice(-40).map(item => {
+      const activity = normalizeActivity(item)
+      return activity && { ...activity, startedAt: Number.isFinite(item.startedAt) ? item.startedAt : null }
+    }).filter(Boolean) : [],
   }
 }
 

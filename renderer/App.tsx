@@ -54,6 +54,8 @@ function EmptyWorkspace({ onSettings }: { onSettings: () => void }) {
 
 const processKinds: Record<string, string> = { designing: '方案设计', developing: '代码开发', verifying: '交付验证' }
 const attemptStatuses: Record<string, string> = { running: '正在运行', completed: '调用完成', error: '执行失败', cancelled: '已取消' }
+const activityLabels: Record<string, string> = { read: '读取项目文件', search: '搜索项目代码', edit: '修改项目代码', command: '运行开发命令', plan: '更新实施清单', other: '执行项目操作' }
+const activityStatuses: Record<string, string> = { running: '进行中', completed: '完成', error: '失败', ended: '已结束' }
 
 function ProcessView({ entries, outputs }: { entries: TaskDetail['timeline']; outputs: TaskDetail['modelOutputs'] }) {
   const outputRef = useRef<HTMLPreElement>(null)
@@ -63,6 +65,7 @@ function ProcessView({ entries, outputs }: { entries: TaskDetail['timeline']; ou
   if (!entries.length) return <div className="content-empty">任务尚未开始调用模型。进入设计后，这里会显示实际返回的正文。</div>
   return <div className="timeline">{entries.map(({ revision, stage, attempt, error }, index) => {
     const output = attempt ? outputs[attempt.id] : undefined
+    const activities = attempt?.activities ?? []
     const live = attempt?.status === 'running'
     const waitingForModel = live && (stage !== 'verifying' || Boolean(attempt.provider))
     const status = attempt?.stopReason === 'interrupted' ? '已中断' : attempt?.status && (attemptStatuses[attempt.status] ?? '已结束')
@@ -74,7 +77,11 @@ function ProcessView({ entries, outputs }: { entries: TaskDetail['timeline']; ou
           {status && <span className={`run-status ${attempt?.status}`}>{status}</span>}
         </header>
         {attempt?.provider && <div className="run-meta">执行器 {attempt.provider}{attempt.startedAt ? ` · ${new Date(attempt.startedAt).toLocaleString('zh-CN', { hour12: false })}` : ''}</div>}
-        {output?.text ? <pre className="model-output" ref={live ? outputRef : undefined}>{output.text}{live && <span className="cursor">▋</span>}</pre> : waitingForModel ? <div className="waiting-output"><i /><i /><i />等待模型正文</div> : null}
+        {activities.length > 0 && <ol className="activity-list" aria-label="模型开发活动">{activities.map(activity => {
+          const activityStatus = !live && activity.status === 'running' ? 'ended' : activity.status
+          return <li className={`activity-item ${activityStatus}`} key={activity.id}><span className="activity-name">{activityLabels[activity.kind]}</span><span className="activity-status">{activityStatuses[activityStatus]}</span></li>
+        })}</ol>}
+        {output?.text ? <pre className="model-output" ref={live ? outputRef : undefined}>{output.text}{live && <span className="cursor">▋</span>}</pre> : waitingForModel && !activities.length ? <div className="waiting-output"><i /><i /><i />等待模型正文</div> : null}
         {output?.truncated && <p className="output-note">仅保留本次调用最近的输出片段。</p>}
         {error && (error.current ? <div className="error-box">{error.message}</div> : <details className="historical-error"><summary>查看历史错误</summary><div className="error-box">{error.message}</div></details>)}
       </div>
@@ -113,7 +120,7 @@ function Workspace({ detail, task }: { detail: TaskDetail | null; task: TaskSumm
     <header className="workspace-head"><div><div className="workspace-kicker"><span>{task.project ?? '未匹配项目'}</span><span>#{task.id}</span></div><h2>{task.summary}</h2></div><StageBadge stage={task.stage} /></header>
     <nav className="workspace-tabs" aria-label="任务详情">{tabs.map(name => <button key={name} className={tab === name ? 'active' : ''} onClick={() => setTab(name)}>{name}</button>)}</nav>
     <div className="workspace-content">{tab === '过程' && <ProcessView entries={detail?.timeline ?? []} outputs={detail?.modelOutputs ?? {}} />}{tab === '方案' && <PlanView entry={entry} />}{tab === '验证' && <ValidationView entry={entry} />}{tab === '交付' && <DeliveryView entry={entry} />}</div>
-    <footer className="workspace-foot"><span>{detail?.history.length ?? 0} 个任务修订</span><span>显示安全的模型正文与验证摘要</span></footer>
+    <footer className="workspace-foot"><span>{detail?.history.length ?? 0} 个任务修订</span><span>显示安全的模型正文、开发活动与验证摘要</span></footer>
   </main>
 }
 

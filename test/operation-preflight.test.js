@@ -99,14 +99,15 @@ test('npm cache hits still repair and check a missing Electron binary', { skip: 
   let installs = 0
   const execute = async (file, args, { env }) => {
     commands.push(file)
-    assert.equal(env.ELECTRON_RUN_AS_NODE, undefined)
     assert.equal(env.ELECTRON_SKIP_BINARY_DOWNLOAD, undefined)
     assert.equal(env.ELECTRON_OVERRIDE_DIST_PATH, undefined)
-    if (file === 'node') {
+    if (file === process.execPath) {
+      assert.equal(env.ELECTRON_RUN_AS_NODE, '1')
       assert.deepEqual(args, [installer])
       await installBinary()
       return { stdout: '' }
     }
+    assert.equal(env.ELECTRON_RUN_AS_NODE, undefined)
     assert.equal(file, binary)
     assert.equal(args[0], '--version')
     assert.match(args[1], /^--user-data-dir=/)
@@ -120,13 +121,32 @@ test('npm cache hits still repair and check a missing Electron binary', { skip: 
   await rm(binary)
   const second = await prepareOperationEnvironment(input)
   assert.equal(second.cached, true)
-  assert.deepEqual(commands, ['node', binary, 'node', binary])
+  assert.deepEqual(commands, [process.execPath, binary, process.execPath, binary])
   assert.equal(installs, 1)
 })
 
 test('Electron preflight reports a missing binary when the installer exits without creating it', { skip: !electronExecutable }, async t => {
   const { cwd } = await electronFixture(t)
   await assert.rejects(prepareOperationElectron({ cwd, execute: async () => ({ stdout: '' }) }), /安装后仍缺少可执行文件/)
+})
+
+test('Electron installer retries the exact version with a fixed mirror and isolates Node mode', { skip: !electronExecutable }, async t => {
+  const { cwd, installer, installBinary } = await electronFixture(t)
+  const mirrors = []
+  const runtime = await prepareOperationElectron({ cwd, execute: async (file, args, { env }) => {
+    if (file === process.execPath) {
+      mirrors.push(env.ELECTRON_MIRROR)
+      assert.deepEqual(args, [installer])
+      assert.equal(env.ELECTRON_RUN_AS_NODE, '1')
+      if (mirrors.length === 1) throw Object.assign(new Error('private installer output'), { code: 1 })
+      await installBinary()
+      return { stdout: '' }
+    }
+    assert.equal(env.ELECTRON_RUN_AS_NODE, undefined)
+    return { stdout: 'v40.10.6\n' }
+  } })
+  assert.equal(runtime.electronDist, join(cwd, 'node_modules', 'electron', 'dist'))
+  assert.deepEqual(mirrors, [undefined, 'https://npmmirror.com/mirrors/electron/'])
 })
 
 test('Windows Electron preflight provides and cleans an independent distribution when the local binary cannot start', { skip: process.platform !== 'win32' }, async t => {

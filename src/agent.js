@@ -72,7 +72,7 @@ export function createAgent({ execute, getModel, loadAttachment, gitCommit, prep
 } = {}) {
   const readCommit = gitCommit ?? ((cwd, signal) => execGit(cwd, signal, 'rev-parse', 'HEAD'))
 
-  async function run({ task, project, signal: parentSignal, recordRun, recordSession, recordResult = () => {}, recordOutput = () => {}, recordAssertion, electronDist }, stage, instructions) {
+  async function run({ task, project, signal: parentSignal, recordRun, recordSession, recordResult = () => {}, recordOutput = () => {}, recordActivity = () => {}, recordAssertion, electronDist }, stage, instructions) {
     const model = await getModel()
     if (!model?.name || !model.baseUrl || !model.apiKey) throw new Error('请先在设置中完成模型 Base URL、模型名称和 API Key 配置。')
     const cwd = stage === 'design' ? project.path : task.work.worktree
@@ -101,6 +101,7 @@ export function createAgent({ execute, getModel, loadAttachment, gitCommit, prep
         prompt, cwd, stage, resumeSessionId: task.agentSessionId, model, signal,
         ...(electronDist && { electronDist }),
         onOutput: text => { if (!signal.aborted) { recordOutput(text); activity() } },
+        onActivity: item => { if (!signal.aborted) { recordActivity(item); activity() } },
         onAssertion: item => { const accepted = recordAssertion?.(item); if (accepted) step(); activity() },
         onSession: sessionId => {
           if (!task.agentSessionId) { task.agentSessionId = sessionId; recordSession(sessionId) }

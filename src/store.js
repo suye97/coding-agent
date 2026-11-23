@@ -56,10 +56,11 @@ export function openStore(path) {
     task.recordedAt = recordedAt
   }
 
-  function progress(task) {
+  function progress(task, queueCard = true) {
     task.recordedAt = Date.now()
     const body = JSON.stringify(task)
     db.prepare('UPDATE tasks SET stage = ?, body = ? WHERE id = ?').run(task.stage, body, task.id)
+    if (!queueCard) return
     // 心跳不改变 revision，避免正在展示的卡片操作因刷新而失效。
     db.prepare(`INSERT INTO outbox (id, task, due) VALUES (?, ?, ?)
       ON CONFLICT(task) DO UPDATE SET due = excluded.due`).run(randomUUID(), task.id, Date.now())
