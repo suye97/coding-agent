@@ -44,6 +44,71 @@ test('dispatch reads persisted requirement revisions and results only for the ow
   assert.ok(history.every(entry => Number.isFinite(entry.recordedAt)))
 })
 
+test('process timeline groups snapshots by attempt and shows only the current diagnostic inline', t => {
+  const dataDirectory = mkdtempSync(join(tmpdir(), 'feishu-dispatch-timeline-'))
+  const config = { dataDirectory }
+  const store = openStore(dispatchDatabase(config))
+  t.after(() => {
+    store.close()
+    rmSync(dataDirectory, { recursive: true, force: true })
+  })
+  const task = { id: 'ABCDEF12', chatId: 'chat', stage: 'queued', requirement: { body: '需求' } }
+  const save = patch => { Object.assign(task, patch); store.save(task) }
+  const dispatch = createDispatchHandler(config)
+  const detail = () => dispatch('feishuDispatch/detail', { taskId: task.id }, undefined, owner).value
+
+  save({})
+  save({ stage: 'developing', attempt: { id: 'first', kind: 'developing', status: 'running' } })
+  save({ attempt: { ...task.attempt, provider: 'agent' } })
+  store.saveModelOutput(task.id, 'first', '历史正文', false)
+  save({ stage: 'blocked', error: '旧版本启动失败' }) // Legacy restart left the attempt running.
+  save({})
+  const blocked = detail()
+  assert.equal(blocked.history.length, 5)
+  assert.equal(blocked.history.at(-1).attempt.status, 'running')
+  assert.deepEqual(blocked.timeline.map(entry => entry.stage), ['developing', 'blocked'])
+  assert.equal(blocked.timeline[0].attempt.status, 'ended')
+  assert.deepEqual(blocked.timeline[1].error, { message: '旧版本启动失败', current: true })
+
+  save({ stage: 'queued' })
+  save({ stage: 'developing', attempt: { id: 'second', kind: 'developing', status: 'running' } })
+  save({ stage: 'blocked', attempt: { ...task.attempt, status: 'error' } })
+  const repeated = detail()
+  assert.deepEqual(repeated.timeline.filter(entry => entry.error).map(entry => entry.error), [
+    { message: '旧版本启动失败', current: true },
+  ])
+
+  save({ stage: 'queued' })
+  save({ stage: 'developing', attempt: { id: 'third', kind: 'developing', status: 'running' } })
+  store.progress(Object.assign(task, { attempt: { ...task.attempt, provider: 'agent' } }))
+  store.saveModelOutput(task.id, 'third', '第一段', false)
+  const current = detail()
+  assert.deepEqual(current.timeline.filter(entry => entry.attempt).map(entry => [entry.attempt.id, entry.attempt.status]), [
+    ['first', 'ended'], ['second', 'error'], ['third', 'running'],
+  ])
+  assert.equal(current.timeline.at(-1).attempt.provider, 'agent')
+  assert.deepEqual(current.timeline.filter(entry => entry.error).map(entry => entry.error), [
+    { message: '旧版本启动失败', current: false },
+  ])
+  assert.equal(current.modelOutputs.first.text, '历史正文')
+  assert.equal(current.modelOutputs.third.text, '第一段')
+  store.saveModelOutput(task.id, 'third', '第一段第二段', false)
+  assert.equal(detail().modelOutputs.third.text, '第一段第二段')
+
+  save({ stage: 'verifying', attempt: { ...task.attempt, status: 'completed' } })
+  save({ result: { checks: [{ label: '固定检查', passed: true }] } })
+  assert.equal(detail().timeline.at(-1).stage, 'verifying')
+  assert.equal(detail().timeline.at(-1).attempt, undefined)
+  save({ attempt: { id: 'verification', kind: 'verifying', status: 'running' } })
+  assert.equal(detail().timeline.filter(entry => entry.stage === 'verifying').length, 1)
+  assert.equal(detail().timeline.at(-1).attempt.status, 'running')
+  save({ stage: 'blocked', attempt: { ...task.attempt, status: 'error' }, error: '实际操作验证失败' })
+  assert.deepEqual(detail().timeline.filter(entry => entry.error).map(entry => entry.error), [
+    { message: '旧版本启动失败', current: false },
+    { message: '实际操作验证失败', current: true },
+  ])
+})
+
 test('dispatch exposes safe UI verification progress without tool records', t => {
   const dataDirectory = mkdtempSync(join(tmpdir(), 'feishu-dispatch-progress-'))
   t.after(() => rmSync(dataDirectory, { recursive: true, force: true }))

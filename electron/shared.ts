@@ -49,9 +49,17 @@ export interface TaskSummary {
   deliveryFailures: number
 }
 
+export interface ProcessEntry {
+  revision: number
+  stage: string
+  attempt?: { id: string; provider?: string; status?: string; startedAt?: number; stopReason?: string }
+  error?: { message: string; current: boolean }
+}
+
 export interface TaskDetail {
   requirement: { body: string }
   history: Array<Record<string, unknown>>
+  timeline: ProcessEntry[]
   modelOutputs: Record<string, { text: string; truncated: boolean }>
   delivery: Record<string, unknown>
 }

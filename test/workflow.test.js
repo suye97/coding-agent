@@ -807,9 +807,16 @@ test('interrupted development is blocked after reopening SQLite', async t => {
   app.store().transaction(() => {
     const [task] = app.store().inStage('design_queued')
     task.stage = 'developing'
+    task.attempt = { id: 'interrupted-development', kind: 'developing', status: 'running', startedAt: Date.now() }
     app.store().save(task)
   })
   app.restart()
+  const [blocked] = app.store().inStage('blocked')
+  assert.equal(blocked.attempt.status, 'error')
+  assert.equal(blocked.attempt.stopReason, 'interrupted')
+  assert.ok(blocked.attempt.finishedAt >= blocked.attempt.startedAt)
+  app.restart()
+  assert.equal(app.store().get(blocked.id).revision, blocked.revision)
   await app.publish()
   assert.match(app.card().text, /上次运行中断/)
   assert.equal(app.attempts.length, 0)

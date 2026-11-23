@@ -71,8 +71,7 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .run-marker span { width: 26px; height: 26px; display: grid; place-items: center; background: #e7edeb; border: 1px solid #d4dedb; border-radius: 50%; color: var(--teal); font-size: 10px; z-index: 1; }
 .run-body { padding-bottom: 30px; min-width: 0; }
 .run-body header { display: flex; justify-content: space-between; align-items: center; min-height: 28px; }
-.run-kind { color: var(--muted); font-size: 10px; }
-.run-body h3 { display: inline; font-size: 13px; margin: 0 0 0 9px; font-weight: 650; }
+.run-body h3 { font-size: 13px; margin: 0; font-weight: 650; }
 .run-status { font-size: 10px; color: var(--muted); }
 .run-status.running { color: var(--teal); }
 .run-meta { color: #929c9d; font-size: 10px; margin: 8px 0 12px; }
@@ -103,7 +102,9 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .commit-block strong, .commit-block code { display: block; margin-bottom: 7px; font-size: 13px; }
 .commit-block code { color: var(--muted); }
 .change-summary { white-space: pre-wrap; font: 12px/1.8 "Cascadia Code", monospace; }
-.error-box { background: #fbefeb; color: #914c38; padding: 13px; font-size: 12px; margin-top: 12px; }
+.error-box { background: #fbefeb; color: #914c38; padding: 13px; font-size: 12px; margin-top: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.historical-error { margin-top: 12px; color: var(--muted); font-size: 12px; }
+.historical-error summary { cursor: pointer; }
 .empty-workspace { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 50px; }
 .empty-symbol { width: 68px; height: 68px; display: grid; place-items: center; border: 1px solid #cdd9d6; border-radius: 50%; color: var(--teal); margin-bottom: 22px; }
 .empty-symbol svg { width: 30px; height: 30px; }

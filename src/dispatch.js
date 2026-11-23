@@ -62,6 +62,61 @@ function historyItem(task) {
   }
 }
 
+const executionStages = new Set(['designing', 'developing', 'verifying'])
+const processStages = new Set([...executionStages, 'blocked', 'manual_review', 'review', 'accepted', 'cancelled'])
+
+function processTimeline(history) {
+  const latest = history.at(-1)
+  const timeline = []
+  const attempts = new Map()
+  let previousStage
+  let stageNode
+  for (const snapshot of history) {
+    const { stage, revision, attempt, error } = snapshot
+    if (stage !== previousStage) stageNode = undefined
+    previousStage = stage
+
+    let node = attempts.get(attempt?.id)
+    const attemptStage = node?.stage ??
+      (attempt?.kind === 'design' ? 'designing' : attempt?.kind ?? (executionStages.has(stage) ? stage : undefined))
+    if (attempt?.id && attemptStage) {
+      if (!node) {
+        // A delegated verification can start after the task has already entered verification.
+        node = attemptStage === stage ? stageNode : undefined
+        if (!node) {
+          node = { stage: attemptStage, revision }
+          timeline.push(node)
+        }
+        attempts.set(attempt.id, node)
+        if (node === stageNode) stageNode = undefined
+      }
+      node.attempt = attempt
+    }
+
+    if (processStages.has(stage) && (!attempt?.id || stage !== attemptStage)) {
+      if (!stageNode) {
+        stageNode = { stage, revision }
+        timeline.push(stageNode)
+      }
+      if (stage === 'blocked' && error) stageNode.error = { message: error, current: snapshot === latest }
+    }
+  }
+
+  // Keep only the newest occurrence of a repeated diagnostic, with the current failure expanded.
+  const errors = new Set()
+  for (const node of timeline.slice().reverse()) {
+    if (node.error) {
+      if (errors.has(node.error.message)) delete node.error
+      else errors.add(node.error.message)
+    }
+    if (node.attempt?.status === 'running' &&
+        (node.attempt.id !== latest.attempt?.id || node.stage !== latest.stage || node.attempt.finishedAt != null)) {
+      node.attempt = { ...node.attempt, status: 'ended' }
+    }
+  }
+  return timeline
+}
+
 export function createDispatchHandler(config) {
   const path = dispatchDatabase(config)
   return (endpoint, payload, signal, peer) => {
@@ -85,6 +140,8 @@ export function createDispatchHandler(config) {
           }))
           return { ok: true, value: { status: 'ready', items } }
         }
+        // Read current state, revisions and model output from the same SQLite snapshot.
+        db.exec('BEGIN')
         const history = db.prepare('SELECT body FROM history WHERE task = ? ORDER BY revision').all(taskId)
           .map(entry => historyItem(JSON.parse(entry.body)))
         if (!history.length) return failure('feishu-dispatch/not-found', 'Task not found')
@@ -100,7 +157,8 @@ export function createDispatchHandler(config) {
         const hasModelOutputs = db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'model_outputs'").get()
         const outputs = hasModelOutputs ? db.prepare('SELECT attempt, text, truncated FROM model_outputs WHERE task = ?').all(taskId) : []
         const modelOutputs = Object.fromEntries(outputs.map(({ attempt, text, truncated }) => [attempt, { text, truncated: Boolean(truncated) }]))
-        return { ok: true, value: { requirement: history.at(-1).requirement, history, modelOutputs, delivery: {
+        db.exec('COMMIT')
+        return { ok: true, value: { requirement: history.at(-1).requirement, history, timeline: processTimeline(history), modelOutputs, delivery: {
           failures: pending?.failures ?? 0, retryAt: pending?.due ?? null, lastError: lastError ?? null,
         } } }
       } finally {

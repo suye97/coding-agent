@@ -480,6 +480,11 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
         }
       }
       for (const task of store.inStage(...inFlight)) {
+        if (task.attempt?.status === 'running') {
+          task.attempt.status = 'error'
+          task.attempt.stopReason = 'interrupted'
+          task.attempt.finishedAt = Date.now()
+        }
         task.failedStage = task.stage
         task.error = '上次运行中断。重试时会先核对已有工作树。'
         update(task, 'blocked')

@@ -11,10 +11,8 @@ const running = new Set(['design_queued', 'designing', 'queued', 'developing', '
 const tabs = ['过程', '方案', '验证', '交付'] as const
 type Tab = typeof tabs[number]
 type HistoryEntry = TaskDetail['history'][number] & {
-  stage?: string; plan?: { summary: string; scope: string; risks: string; verification: string }
-  attempt?: { id?: string; kind?: string; provider?: string; status?: string; startedAt?: number; finishedAt?: number; childId?: string }
+  plan?: { summary: string; scope: string; risks: string; verification: string }
   result?: { branch?: string; commit?: string; changes?: string; checks?: Array<{ label: string; passed: boolean; output?: string }>; operationEvidence?: { operation?: string; observed?: string; steps?: Array<{ action: string; observed: string }> } }
-  error?: string
 }
 
 function Icon({ name }: { name: 'plus' | 'settings' | 'search' | 'branch' | 'check' | 'close' }) {
@@ -54,21 +52,31 @@ function EmptyWorkspace({ onSettings }: { onSettings: () => void }) {
   return <main className="workspace empty-workspace"><div className="empty-symbol"><Icon name="branch" /></div><h2>等待第一项需求</h2><p>在飞书发送“开发需求｜项目名”并附上需求正文。设计、开发和验证会在这里持续更新。</p><button className="primary" onClick={onSettings}><Icon name="settings" />检查渠道与项目配置</button></main>
 }
 
-function ProcessView({ history, outputs }: { history: HistoryEntry[]; outputs: TaskDetail['modelOutputs'] }) {
+const processKinds: Record<string, string> = { designing: '方案设计', developing: '代码开发', verifying: '交付验证' }
+const attemptStatuses: Record<string, string> = { running: '正在运行', completed: '调用完成', error: '执行失败', cancelled: '已取消' }
+
+function ProcessView({ entries, outputs }: { entries: TaskDetail['timeline']; outputs: TaskDetail['modelOutputs'] }) {
   const outputRef = useRef<HTMLPreElement>(null)
-  const entries = history.filter(item => item.attempt?.id || item.plan || item.result || item.error)
-  useEffect(() => { outputRef.current?.scrollTo({ top: outputRef.current.scrollHeight }) }, [outputs])
+  const activeId = entries.find(entry => entry.attempt?.status === 'running')?.attempt?.id
+  const activeText = activeId ? outputs[activeId]?.text : undefined
+  useEffect(() => { outputRef.current?.scrollTo({ top: outputRef.current.scrollHeight }) }, [activeId, activeText])
   if (!entries.length) return <div className="content-empty">任务尚未开始调用模型。进入设计后，这里会显示实际返回的正文。</div>
-  return <div className="timeline">{entries.map((entry, index) => {
-    const id = entry.attempt?.id
-    const output = id ? outputs[id] : undefined
-    return <article className="run-entry" key={`${entry.revision ?? index}-${id ?? 'state'}`}>
+  return <div className="timeline">{entries.map(({ revision, stage, attempt, error }, index) => {
+    const output = attempt ? outputs[attempt.id] : undefined
+    const live = attempt?.status === 'running'
+    const waitingForModel = live && (stage !== 'verifying' || Boolean(attempt.provider))
+    const status = attempt?.stopReason === 'interrupted' ? '已中断' : attempt?.status && (attemptStatuses[attempt.status] ?? '已结束')
+    return <article className="run-entry" key={attempt ? `attempt-${attempt.id}` : `stage-${revision}`}>
       <div className="run-marker"><span>{index + 1}</span></div>
-      <div className="run-body"><header><div><span className="run-kind">{entry.attempt?.kind === 'design' ? '方案设计' : entry.attempt?.kind === 'developing' ? '代码开发' : entry.stage === 'verifying' ? '交付验证' : '任务更新'}</span><h3>{stages[entry.stage ?? ''] ?? entry.stage}</h3></div>{entry.attempt?.status && <span className={`run-status ${entry.attempt.status}`}>{entry.attempt.status === 'running' ? '正在运行' : entry.attempt.status === 'completed' ? '调用完成' : '已结束'}</span>}</header>
-        {entry.attempt?.provider && <div className="run-meta">执行器 {entry.attempt.provider}{entry.attempt.startedAt ? ` · ${new Date(entry.attempt.startedAt).toLocaleString('zh-CN', { hour12: false })}` : ''}</div>}
-        {output?.text ? <pre className="model-output" ref={outputRef}>{output.text}{entry.attempt?.status === 'running' && <span className="cursor">▋</span>}</pre> : entry.attempt?.status === 'running' ? <div className="waiting-output"><i /><i /><i />等待模型正文</div> : null}
+      <div className="run-body">
+        <header>
+          <h3>{processKinds[stage] ?? stages[stage] ?? stage}</h3>
+          {status && <span className={`run-status ${attempt?.status}`}>{status}</span>}
+        </header>
+        {attempt?.provider && <div className="run-meta">执行器 {attempt.provider}{attempt.startedAt ? ` · ${new Date(attempt.startedAt).toLocaleString('zh-CN', { hour12: false })}` : ''}</div>}
+        {output?.text ? <pre className="model-output" ref={live ? outputRef : undefined}>{output.text}{live && <span className="cursor">▋</span>}</pre> : waitingForModel ? <div className="waiting-output"><i /><i /><i />等待模型正文</div> : null}
         {output?.truncated && <p className="output-note">仅保留本次调用最近的输出片段。</p>}
-        {entry.error && <div className="error-box">{entry.error}</div>}
+        {error && (error.current ? <div className="error-box">{error.message}</div> : <details className="historical-error"><summary>查看历史错误</summary><div className="error-box">{error.message}</div></details>)}
       </div>
     </article>
   })}</div>
@@ -97,7 +105,7 @@ function Workspace({ detail, task }: { detail: TaskDetail | null; task: TaskSumm
   return <main className="workspace">
     <header className="workspace-head"><div><div className="workspace-kicker"><span>{task.project ?? '未匹配项目'}</span><span>#{task.id}</span></div><h2>{task.summary}</h2></div><StageBadge stage={task.stage} /></header>
     <nav className="workspace-tabs" aria-label="任务详情">{tabs.map(name => <button key={name} className={tab === name ? 'active' : ''} onClick={() => setTab(name)}>{name}</button>)}</nav>
-    <div className="workspace-content">{tab === '过程' && <ProcessView history={(detail?.history ?? []) as HistoryEntry[]} outputs={detail?.modelOutputs ?? {}} />}{tab === '方案' && <PlanView entry={entry} />}{tab === '验证' && <ValidationView entry={entry} />}{tab === '交付' && <DeliveryView entry={entry} />}</div>
+    <div className="workspace-content">{tab === '过程' && <ProcessView entries={detail?.timeline ?? []} outputs={detail?.modelOutputs ?? {}} />}{tab === '方案' && <PlanView entry={entry} />}{tab === '验证' && <ValidationView entry={entry} />}{tab === '交付' && <DeliveryView entry={entry} />}</div>
     <footer className="workspace-foot"><span>{detail?.history.length ?? 0} 个任务修订</span><span>显示安全的模型正文与验证摘要</span></footer>
   </main>
 }
@@ -105,11 +113,12 @@ function Workspace({ detail, task }: { detail: TaskDetail | null; task: TaskSumm
 export function App() {
   const [tasks, setTasks] = useState<TaskSummary[]>([])
   const [selected, setSelected] = useState('')
-  const [detail, setDetail] = useState<TaskDetail | null>(null)
+  const [loadedDetail, setLoadedDetail] = useState<{ taskId: string; value: TaskDetail | null } | null>(null)
   const [config, setConfig] = useState<PublicConfig | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [error, setError] = useState('')
   const selectedTask = useMemo(() => tasks.find(task => task.id === selected) ?? tasks[0], [tasks, selected])
+  const detail = loadedDetail && loadedDetail.taskId === selectedTask?.id ? loadedDetail.value : null
 
   useEffect(() => {
     let active = true
@@ -128,9 +137,10 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    if (!selectedTask) { setDetail(null); return }
+    if (!selectedTask) { setLoadedDetail(null); return }
     let active = true
-    const load = () => window.desktop.getTask(selectedTask.id).then(value => { if (active) setDetail(value) }).catch(() => {})
+    const taskId = selectedTask.id
+    const load = () => window.desktop.getTask(taskId).then(value => { if (active) setLoadedDetail({ taskId, value }) }).catch(() => {})
     void load()
     const timer = running.has(selectedTask.stage) ? window.setInterval(load, 1500) : undefined
     return () => { active = false; if (timer) clearInterval(timer) }
