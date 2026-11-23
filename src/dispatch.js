@@ -57,13 +57,15 @@ function historyItem(task) {
     result: task.result && {
       branch: task.result.branch, commit: task.result.commit, changes: task.result.changes,
       checks: task.result.checks, remote: task.result.remote, changeReview: task.result.changeReview,
-      operationEvidence: task.result.operationEvidence,
+      operationEvidence: task.result.operationEvidence, merged: task.result.merged,
+      mergeVerification: task.mergeResult && { commit: task.mergeResult.commit,
+        checks: task.mergeResult.checks, operationEvidence: task.mergeResult.operationEvidence },
     },
   }
 }
 
 const executionStages = new Set(['designing', 'developing', 'verifying'])
-const processStages = new Set([...executionStages, 'blocked', 'manual_review', 'review', 'accepted', 'cancelled'])
+const processStages = new Set([...executionStages, 'blocked', 'manual_review', 'review', 'pushed', 'accepted', 'delivered', 'cancelled'])
 
 function processTimeline(history) {
   const latest = history.at(-1)

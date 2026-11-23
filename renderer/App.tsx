@@ -6,14 +6,22 @@ import { SettingsDrawer } from './SettingsDrawer.js'
 const stages: Record<string, string> = {
   confirm: '待补充', design_queued: '等待设计', designing: '设计中', queued: '等待开发',
   developing: '开发中', verify_queued: '等待验证', verifying: '验证中', blocked: '已阻塞',
-  manual_review: '待审批', review: '待验收', accepted: '已验收', cancelled: '已取消',
+  manual_review: '待审批', review: '已推送', pushed: '已推送', accepted: '已验收', delivered: '已交付', cancelled: '已取消',
 }
 const running = new Set(['design_queued', 'designing', 'queued', 'developing', 'verify_queued', 'verifying'])
 const tabs = ['过程', '方案', '验证', '交付'] as const
 type Tab = typeof tabs[number]
+type Verification = {
+  checks?: Array<{ label: string; passed: boolean; output?: string }>
+  operationEvidence?: { operation?: string; observed?: string; steps?: Array<{ action: string; observed: string }> }
+}
 type HistoryEntry = TaskDetail['history'][number] & {
   plan?: { summary: string; scope: string; risks: string; verification: string }
-  result?: { branch?: string; commit?: string; changes?: string; checks?: Array<{ label: string; passed: boolean; output?: string }>; operationEvidence?: { operation?: string; observed?: string; steps?: Array<{ action: string; observed: string }> } }
+  result?: Verification & {
+    branch?: string; commit?: string; changes?: string; remote?: string
+    merged?: { branch: string; commit: string }
+    mergeVerification?: Verification & { commit: string }
+  }
 }
 
 function StageBadge({ stage }: { stage: string }) {
@@ -79,16 +87,23 @@ function PlanView({ entry }: { entry: HistoryEntry }) {
   return <div className="document"><section><span className="document-label">实现方案</span><p>{entry.plan.summary}</p></section><div className="document-grid"><section><span className="document-label">影响范围</span><p>{entry.plan.scope}</p></section><section><span className="document-label">风险与约束</span><p>{entry.plan.risks}</p></section></div><section><span className="document-label">验证计划</span><p>{entry.plan.verification}</p></section></div>
 }
 
+function VerificationDetails({ verification, label }: { verification: Verification; label: string }) {
+  const { operationEvidence: evidence, checks = [] } = verification
+  return <><section><span className="document-label">{label}</span><div className="check-list">{checks.map(check => <div key={check.label}><span className={check.passed ? 'check-pass' : 'check-fail'}>{check.passed ? '通过' : '失败'}</span><strong>{check.label}</strong></div>)}</div></section>{evidence && <section><span className="document-label">实际操作证据</span><h3>{evidence.operation}</h3><p>{evidence.observed}</p><ol className="evidence-steps">{evidence.steps?.map(step => <li key={step.action}><strong>{step.action}</strong><p>{step.observed}</p></li>)}</ol></section>}</>
+}
+
 function ValidationView({ entry }: { entry: HistoryEntry }) {
-  const evidence = entry.result?.operationEvidence
-  const checks = entry.result?.checks ?? []
-  if (!evidence && !checks.length) return <div className="content-empty">固定项目检查和实际操作证据会一起显示，模型自述不能替代验证结果。</div>
-  return <div className="document"><section><span className="document-label">固定项目检查</span><div className="check-list">{checks.map(check => <div key={check.label}><span className={check.passed ? 'check-pass' : 'check-fail'}>{check.passed ? '通过' : '失败'}</span><strong>{check.label}</strong></div>)}</div></section>{evidence && <section><span className="document-label">实际操作证据</span><h3>{evidence.operation}</h3><p>{evidence.observed}</p><ol className="evidence-steps">{evidence.steps?.map(step => <li key={step.action}><strong>{step.action}</strong><p>{step.observed}</p></li>)}</ol></section>}</div>
+  const result = entry.result
+  if (!result || (!result.operationEvidence && !result.checks?.length)) return <div className="content-empty">固定项目检查和实际操作证据会一起显示，模型自述不能替代验证结果。</div>
+  return <div className="document">
+    <VerificationDetails verification={result} label="任务分支检查" />
+    {result.mergeVerification && <VerificationDetails verification={result.mergeVerification} label="master 合并候选检查" />}
+  </div>
 }
 
 function DeliveryView({ entry }: { entry: HistoryEntry }) {
   if (!entry.result) return <div className="content-empty">开发、检查和验证完成后，这里会显示可交付的分支与提交。</div>
-  return <div className="document"><section><span className="document-label">交付提交</span><div className="commit-block"><Icon name="branch" /><div><strong>{entry.result.branch ?? '任务分支'}</strong><code>{entry.result.commit ?? '等待提交'}</code></div></div></section><section><span className="document-label">变更摘要</span><pre className="change-summary">{entry.result.changes || '没有文件变更记录'}</pre></section></div>
+  return <div className="document"><section><span className="document-label">交付提交</span><div className="commit-block"><Icon name="branch" /><div><strong>{entry.result.branch ?? '任务分支'}</strong><code>{entry.result.commit ?? '等待提交'}</code></div></div></section>{entry.result.merged && <section><span className="document-label">远程合并</span><div className="commit-block"><Icon name="branch" /><div><strong>{entry.result.remote}/{entry.result.merged.branch}</strong><code>{entry.result.merged.commit}</code></div></div></section>}<section><span className="document-label">变更摘要</span><pre className="change-summary">{entry.result.changes || '没有文件变更记录'}</pre></section></div>
 }
 
 function Workspace({ detail, task }: { detail: TaskDetail | null; task: TaskSummary }) {

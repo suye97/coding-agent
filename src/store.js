@@ -77,7 +77,7 @@ export function openStore(path) {
     },
     byMessage(message) { return db.prepare('SELECT task FROM cards WHERE message = ?').get(message)?.task },
     inChat(chat) {
-      return db.prepare("SELECT body FROM tasks WHERE chat = ? AND stage NOT IN ('accepted','cancelled') ORDER BY rowid").all(chat).map(decode)
+      return db.prepare("SELECT body FROM tasks WHERE chat = ? AND stage NOT IN ('accepted','cancelled','delivered','pushed') ORDER BY rowid").all(chat).map(decode)
     },
     inStage(...stages) {
       const params = stages.map(() => '?').join(', ')

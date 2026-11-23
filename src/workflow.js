@@ -6,7 +6,8 @@ import { MAX_TASK_ATTACHMENTS, MAX_TASK_ATTACHMENT_BYTES } from './attachments.j
 const evidencePrefix = 'FEISHU_OPERATION_EVIDENCE '
 const observation = value => typeof value === 'string' && value.trim() && value.length <= 500
 const actionable = /界面|页面|屏幕|按钮|弹窗|点击|表单|输入框|交互|复现|运行时|打开|选中|拖拽|下拉|仪表盘|前端|滑动|勾选|切换|筛选|用户(?:可|能|操作)|\b(?:ui|ux|browser|dialog|screen|button|form|click|submit|navigate|repro(?:duce|duction)?|runtime|dashboard|webpage|website|dropdown|log in)\b/iu
-const imageStages = ['confirm', 'design_queued', 'designing', 'blocked', 'review']
+const reworkStages = ['review', 'pushed', 'delivered']
+const imageStages = ['confirm', 'design_queued', 'designing', 'blocked', ...reworkStages]
 const acceptsImage = task => imageStages.includes(task.stage) ||
   (task.stage === 'manual_review' && task.manualReview?.kind === 'alternative')
 
@@ -144,15 +145,16 @@ function resumeCheckpoint(task, validation, commit, baseline, candidate) {
 const titles = {
   confirm: '待补充需求', design_queued: '等待设计', designing: '设计中', approval: '历史待审批', held: '历史暂缓任务',
   queued: '开发已入队', developing: '开发中', verify_queued: '等待验证', verifying: '验证中', blocked: '任务阻塞',
-  manual_review: '待所有者审批', review: '开发交付', accepted: '已验收', cancelled: '已取消',
+  manual_review: '待所有者审批', review: '已推送', pushed: '已推送', accepted: '已验收', delivered: '已交付', cancelled: '已取消',
 }
+const deliveryActions = [['details', '查看改动'], ['rework', '要求返工', true], ['revise', '调整范围并重新设计', true]]
 const actions = {
   confirm: [['supplement', '补充信息', true], ['cancel', '取消']],
   design_queued: [['cancel', '取消']], designing: [['cancel', '取消']],
   queued: [['cancel', '取消']], developing: [['cancel', '取消']], verify_queued: [['cancel', '取消']], verifying: [['cancel', '取消']],
   blocked: [['retry', '重试'], ['fix_checks', '返工后重新验证', true], ['supplement', '提交补充', true], ['cancel', '取消']],
   manual_review: [['approve_manual', '批准'], ['decline_manual', '拒绝'], ['cancel', '取消']],
-  review: [['details', '查看改动'], ['rework', '要求返工', true], ['revise', '调整范围并重新设计', true], ['accept', '确认验收']],
+  review: deliveryActions, pushed: deliveryActions, delivered: deliveryActions,
 }
 const inFlight = ['designing', 'developing', 'verifying']
 const textLimit = 12000
@@ -246,13 +248,18 @@ function render(task, project) {
       ? Math.max(0, Math.floor(checkpoint.stepElapsedMs / 1000))
       : checkpoint.stepStartedAt ? Math.max(0, Math.floor((end - checkpoint.stepStartedAt) / 1000)) : 0
     const elapsed = seconds >= 60 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${seconds} 秒`
-    const activity = checkpoint.phase === 'pushing'
+    const activity = checkpoint.phase === 'merging'
+      ? ` · ${stage === 'verifying' ? '正在更新 master' : '停在 master 合并'}`
+      : checkpoint.phase === 'pushing'
       ? ` · ${stage === 'verifying' ? '正在推送' : '停在推送'}`
       : checkpoint.phase === 'baseline'
         ? ` · ${stage === 'verifying' ? '正在复现基线' : '停在基线复现'} · 本步 ${elapsed}`
         : checkpoint.preflight === 'ready' && completed < checkpoint.steps.length
           ? ` · ${stage === 'verifying' ? '正在执行' : '停在'}第 ${current} 步 · 本步 ${elapsed}` : ''
     lines.push(`UI 验证 ${environment} · 已完成 ${completed}/${checkpoint.steps.length} 步${checkpoint.baselineReproduced ? ' · 基线已复现' : ''}${activity}`)
+  }
+  if (stage === 'verifying' && task.delivery && result?.remote) {
+    lines.push(`已推送 ${result.remote}/${result.branch} · 正在处理 ${result.remote}/master`)
   }
   if (acceptsImage(task)) lines.push(`可回复此卡片发送原型图或截图。已附 ${task.attachments?.length ?? 0}/8 张。`)
   if (stage === 'manual_review' && task.manualReview?.kind === 'alternative') {
@@ -264,19 +271,23 @@ function render(task, project) {
       : `验证范围\n${validation.reason}`)
   }
   if (error && stage === 'blocked') lines.push(`失败阶段 ${titles[task.failedStage]}`, error)
-  if (result && ['review', 'manual_review', 'blocked', 'accepted'].includes(stage)) {
-    const changeReview = result.changeReview
+  if (result && [...reworkStages, 'manual_review', 'blocked', 'accepted'].includes(stage)) {
+    lines.push(`分支 ${result.branch}`, `提交 ${result.commit || '待提交'}`)
+    if (result.remote) lines.push(`已推送 ${result.remote}/${result.branch}`)
+    if (result.merged) lines.push(`已合入 ${result.remote}/${result.merged.branch} · ${result.merged.commit}`)
+    const verification = task.mergeResult ?? result
+    if (task.mergeResult && !result.merged) lines.push(`master 合并候选 ${task.mergeResult.commit}`)
+    const changeReview = verification.changeReview
     if (changeReview?.deletions.length) lines.push('删除的受跟踪文件', ...changeReview.deletions)
     if (changeReview?.warnings.length) lines.push('脚本检查提示', ...changeReview.warnings.map(({ path, reason }) => `${path} ${reason}`))
-    if (result.operationEvidence) {
-      const { operation, expected, observed, steps, baseline } = result.operationEvidence
+    if (verification.operationEvidence) {
+      const { operation, expected, observed, steps, baseline } = verification.operationEvidence
       lines.push(`实测操作 ${operation}`, `预期 ${expected}`, `实测结果 ${observed}`,
         ...steps.map(step => `${step.action}\n${step.observed}`))
       if (baseline) lines.push(`基线复现 ${baseline}`)
     }
-    lines.push(`分支 ${result.branch}`, `提交 ${result.commit || '待提交'}`, `改动\n${result.changes || '暂无'}`)
-    if (result.remote) lines.push(`已推送 ${result.remote}/${result.branch}`)
-    if (result.checks?.length) lines.push(`验证\n${result.checks.map(check => `${check.passed ? '通过' : '失败'} ${check.label}${check.output ? `\n${check.output}` : ''}`).join('\n')}`)
+    lines.push(`改动\n${result.changes || '暂无'}`)
+    if (verification.checks?.length) lines.push(`验证\n${verification.checks.map(check => `${check.passed ? '通过' : '失败'} ${check.label}${check.output ? `\n${check.output}` : ''}`).join('\n')}`)
     if (task.showDetails && result.worktree) lines.push(`本地目录 ${result.worktree}`)
   }
   return {
@@ -345,7 +356,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
       const task = id && store.get(id)
       if (group && (!task || task.chatId !== chatId || task.owner !== actor)) return ''
       if (!task || task.chatId !== chatId || task.owner !== actor) return '请发送“开发需求｜项目名”或“修复缺陷｜项目名”创建任务，或回复任务卡片。'
-      return respond(task, task.stage === 'review' ? 'rework' : 'supplement',
+      return respond(task, reworkStages.includes(task.stage) ? 'rework' : 'supplement',
         (target ? text.slice(target[0].length) : text).trim())
     })
   }
@@ -415,7 +426,8 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
           task.alternativeApproval = { proposal: review.proposal, requirementVersion: task.requirementVersion, planVersion: task.planVersion }
           task.manualReview = null
           update(task, 'queued')
-        } else if (review?.kind === 'change' && review.commit === task.result?.changeReview?.commit && review.commit === task.result.commit) {
+        } else if (review?.kind === 'change' && review.commit === (task.mergeResult ?? task.result)?.changeReview?.commit &&
+            review.commit === (task.mergeResult ?? task.result)?.commit) {
           task.changeReviewApproval = { commit: review.commit }
           task.manualReview = null
           update(task, 'verify_queued')
@@ -440,9 +452,8 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
         break
       case 'details':
         task.showDetails = true
-        update(task, 'review')
+        update(task, task.stage)
         return `分支 ${task.result.branch}。详情已更新至卡片。`
-      case 'accept': update(task, 'accepted'); break
       case 'cancel':
         if (task.attempt?.status === 'running') {
           task.attempt.status = 'cancelled'
@@ -469,6 +480,8 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
 
   function recover() {
     store.transaction(() => {
+      // 刷新旧的待验收卡片。历史推送本身不会进入自动合并队列。
+      for (const task of store.inStage('review')) update(task, 'pushed')
       // 升级后不再等待人工确认或方案审批，旧的等待任务直接进入自动流程。
       for (const task of store.inStage('confirm', 'approval', 'held')) {
         if (!readyForDesign(task)) {
@@ -516,7 +529,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
         clearTimeout(verificationTimer)
         verificationTimer = undefined
       } else if (!verificationTimer) {
-        verificationTimer = setTimeout(() => verificationTimeout.abort(new Error('验证阶段超过总时间上限，已终止本次检查、实测或推送；有效检查点会在重试时复用。')), verificationTimeoutMs)
+        verificationTimer = setTimeout(() => verificationTimeout.abort(new Error('验证阶段超过总时间上限，已终止本次检查、实测、推送或合并。重试可复用有效检查点。')), verificationTimeoutMs)
       }
     }
     const persist = (stage, afterTimeout = false) => store.transaction(() => {
@@ -589,6 +602,146 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
         onError(error)
       }
     }, 15000)
+    async function verifyCommit(project, operationValidation, candidate) {
+      const previousEvidence = (candidate ? task.mergeResult?.operationEvidence : task.result?.operationEvidence)
+        ?? task.result?.operationEvidence
+      const { operationReports, ...result } = await repository.verify({ task, project, signal,
+        ...(candidate ? { candidate } : task.verification), operationValidation })
+      if (candidate) task.mergeResult = result
+      else task.result = result
+      if (result.changeReview?.approvalRequired) {
+        task.manualReview = { kind: 'change', commit: result.changeReview.commit, sourceStage: task.stage }
+        persist('manual_review')
+        return
+      }
+      if (!result.checks?.length || !result.checks.every(check => check.passed)) throw new Error('验证未通过，请查看检查结果。')
+      if (operationValidation) {
+        if (operationReports?.length) {
+          result.operationEvidence = bindEvidenceIdentity({ ...observedOperation(operationValidation, operationReports, task), commit: result.commit }, task, operationValidation)
+          task.operationEvidence = result.operationEvidence
+          persist('verifying')
+        } else {
+          // 完整证据和检查点使用同一套提交、步骤、需求/方案版本及基线身份。
+          const storedEvidence = evidenceIdentityMatches(task.operationEvidence, task, operationValidation, result.commit)
+            ? task.operationEvidence : undefined
+          const baseline = ['agent', 'development'].includes(previousEvidence?.source) && previousEvidence.baseCommit === task.work.base
+            ? previousEvidence.baselineTool : undefined
+          let developmentEvidence
+          if (storedEvidence?.source === 'development') {
+            try {
+              developmentEvidence = bindEvidenceIdentity(
+                agentOperationEvidence(operationValidation, storedEvidence, result.commit, task.attempt, baseline), task, operationValidation)
+            } catch { /* 缺少证据时进入检查点补验。 */ }
+          }
+          if (storedEvidence?.source === 'development' ? developmentEvidence : completeStoredEvidence(storedEvidence, operationValidation, task, result.commit)) {
+            task.operationEvidence = developmentEvidence ?? storedEvidence
+          } else {
+            let { checkpoint, progress } = resumeCheckpoint(task, operationValidation, result.commit, baseline, storedEvidence)
+            let checkpointError
+            const saveCheckpoint = () => {
+              task.operationCheckpoint = checkpoint
+              try { persist('verifying') } catch (error) { checkpointError ??= error }
+            }
+            const recordPreflight = status => {
+              checkpoint.preflight = status
+              checkpoint.phase = status === 'ready'
+                ? (operationValidation.type === 'fix' && !checkpoint.baselineReproduced && !baseline ? 'baseline' : 'step')
+                : 'preflight'
+              delete checkpoint.finishedAt
+              delete checkpoint.stepElapsedMs
+              if (status === 'ready') checkpoint.stepStartedAt = Date.now()
+              saveCheckpoint()
+            }
+            const recordCheckpoint = assertion => {
+              const next = agentObservationProgress(operationValidation, [...checkpoint.assertions, assertion], result.commit, baseline)
+              if (next.accepted.length === checkpoint.assertions.length) {
+                checkpoint.rejectedSteps = [...checkpoint.rejectedSteps ?? [], {
+                  step: (() => { try { return JSON.parse(assertion?.line)?.step } catch {} })() ?? null,
+                  commit: (() => { try { return JSON.parse(assertion?.line)?.commit } catch {} })() ?? null,
+                  validOutput: typeof assertion?.id === 'string' && /^[a-f0-9]{64}$/u.test(assertion?.sha256),
+                }].slice(-8)
+                saveCheckpoint()
+                return false
+              }
+              checkpoint.assertions = next.accepted
+              checkpoint.completedSteps = next.steps.map((_, index) => index + 1)
+              checkpoint.baselineReproduced = next.observations.length > next.steps.length
+              checkpoint.phase = operationValidation.type === 'fix' && !checkpoint.baselineReproduced && !baseline ? 'baseline' : 'step'
+              checkpoint.lastRecordedAt = Date.now()
+              checkpoint.stepStartedAt = checkpoint.lastRecordedAt
+              saveCheckpoint()
+              return true
+            }
+            // 在调用新的 Agent 前先恢复并持久化进度，重启后的首张卡片不会回到 0/N。
+            saveCheckpoint()
+            if (task.attempt.kind !== 'verifying' || task.attempt.status !== 'running') {
+              flushOutput()
+              task.attempt = { id: randomUUID(), kind: 'verifying', startedAt: Date.now(), status: 'running' }
+              persist('verifying')
+              attemptId = task.attempt.id
+              output = ''
+              truncated = false
+            }
+            const verificationTask = candidate ? { ...task, sessionCreated: false, agentSessionId: undefined,
+              work: { ...task.work, worktree: candidate.worktree } } : task
+            const evidence = await runner.verifyOperation({ task: verificationTask, project, signal, recordRun,
+              recordSession: candidate ? () => {} : recordSession, recordResult, recordOutput,
+              validation: operationValidation, commit: result.commit,
+              baselineObserved: Boolean(baseline) || progress.observations.length > progress.steps.length,
+              ...(progress.steps.length && { checkpoint: { completedSteps: progress.steps.map((_, index) => index + 1) } }),
+              recordCheckpoint, recordPreflight })
+            if (checkpointError) throw checkpointError
+            if (evidence.alternative) {
+              delete task.operationCheckpoint
+              task.manualReview = { kind: 'alternative', proposal: evidence.alternative, sourceStage: task.stage }
+              persist('manual_review')
+              return
+            }
+            try {
+              task.operationEvidence = bindEvidenceIdentity(agentOperationEvidence(operationValidation,
+                { ...evidence, assertions: [...checkpoint.assertions, ...evidence.assertions] }, result.commit, task.attempt, baseline), task, operationValidation)
+            } catch (error) {
+              if (error instanceof Error && /逐步工具记录|基线复现/u.test(error.message)) {
+                // Incomplete resumed evidence is revalidated by the SDK itself; only live
+                // observations rejected by recordCheckpoint belong in this diagnostic.
+                const accepted = new Set(checkpoint.assertions.map(item => item.id))
+                const rejected = (evidence.assertions ?? []).filter(item => !accepted.has(item.id)).map(item => {
+                  try {
+                    const record = JSON.parse(item.line)
+                    return { step: typeof record.step === 'number' && Number.isInteger(record.step) ? record.step : null, commit: record.commit }
+                  } catch { return { step: null, commit: null } }
+                })
+                const wrongStep = rejected.filter(item => item.step === null || item.step > operationValidation.steps.length ||
+                  item.step < (operationValidation.type === 'fix' && !baseline ? 0 : 1)).length
+                const commitMismatch = rejected.filter(item => typeof item.step === 'number' && Number.isInteger(item.step) &&
+                  item.step >= 0 && item.step <= operationValidation.steps.length && !wrongStep &&
+                  item.commit !== (item.step === 0 ? operationValidation.baseCommit : result.commit)).length
+                error.message += ` 主程序已接受 ${checkpoint.completedSteps.length}/${operationValidation.steps.length} 步，验证 Agent 返回 ${evidence.assertions?.length ?? 0} 条工具记录，其中 ${commitMismatch} 条提交不匹配，${wrongStep} 条步骤编号不适用，${rejected.length - commitMismatch - wrongStep} 条缺少有效工具标识或观察结果。`
+                if (operationValidation.type === 'fix' && !baseline && !checkpoint.baselineReproduced) error.message += ' 缺少基线复现的工具记录。'
+                if (!evidence.assertions?.length) error.message += ' 未收到本轮工具输出中的逐步证据，模型自述不能代替实测记录。'
+                if (task.attempt.stopReason === 'max_output_tokens') error.message += ' 模型输出达到长度上限，记录可能不完整。'
+                if (checkpointError) error.message += ` 检查点保存失败：${checkpointError instanceof Error ? checkpointError.message.slice(0, 200) : '请重试。'}`
+              }
+              throw error
+            }
+            persist('verifying')
+          }
+        }
+        result.operationEvidence = task.operationEvidence
+        task.operationCheckpoint = {
+          commit: result.commit, operation: operationValidation.operation, expected: operationValidation.expected, steps: operationValidation.steps,
+          baseCommit: operationValidation.baseCommit, requirementVersion: task.requirementVersion, planVersion: task.planVersion,
+          preflight: 'ready', phase: candidate ? 'merging' : 'pushing', completedSteps: operationValidation.steps.map((_, index) => index + 1),
+          baselineReproduced: Boolean(task.operationEvidence.baseline), startedAt: task.operationCheckpoint?.startedAt ?? Date.now(),
+          stepStartedAt: Date.now(),
+        }
+        delete task.operationCheckpoint.finishedAt
+        delete task.operationCheckpoint.stepElapsedMs
+        persist('verifying')
+      }
+      return result
+    }
+
     try {
       const project = projects.get(task.project)
       if (!project) throw new Error('当前配置中缺少任务项目。')
@@ -641,147 +794,41 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
           persist('manual_review')
           return
         }
+        delete task.delivery
+        delete task.mergeResult
         task.verification = { previousCommit: task.work.pushedCommit ?? task.work.base, requireNewCommit: Boolean(task.work.pushedCommit) }
         task.validationRework = task.rework
         task.rework = null
         persist('verifying')
       }
       const operationValidation = validation.kind === 'operation' ? { ...validation, type: task.type, baseCommit: task.work.base } : undefined
-      const previousEvidence = task.result?.operationEvidence
-      const { operationReports, ...result } = await repository.verify({ task, project, signal, ...task.verification, operationValidation })
-      task.result = result
-      if (result.changeReview?.approvalRequired) {
-        task.manualReview = { kind: 'change', commit: result.changeReview.commit, sourceStage: task.stage }
-        persist('manual_review')
-        return
+      if (task.delivery?.requirementVersion !== task.requirementVersion || task.delivery?.planVersion !== task.planVersion) {
+        delete task.delivery
+        delete task.mergeResult
       }
-      if (!result.checks?.length || !result.checks.every(check => check.passed)) throw new Error('验证未通过，请查看检查结果。')
-      if (operationValidation) {
-        if (operationReports?.length) {
-          result.operationEvidence = bindEvidenceIdentity({ ...observedOperation(operationValidation, operationReports, task), commit: result.commit }, task, operationValidation)
-          task.operationEvidence = result.operationEvidence
-          persist('verifying')
-        } else {
-          // 完整证据和检查点使用同一套提交、步骤、需求/方案版本及基线身份。
-          const candidate = evidenceIdentityMatches(task.operationEvidence, task, operationValidation, result.commit)
-            ? task.operationEvidence : undefined
-          const baseline = ['agent', 'development'].includes(previousEvidence?.source) && previousEvidence.baseCommit === task.work.base
-            ? previousEvidence.baselineTool : undefined
-          let developmentEvidence
-          if (candidate?.source === 'development') {
-            try {
-              developmentEvidence = bindEvidenceIdentity(
-                agentOperationEvidence(operationValidation, candidate, result.commit, task.attempt, baseline), task, operationValidation)
-            } catch { /* 缺少证据时进入检查点补验。 */ }
-          }
-          if (candidate?.source === 'development' ? developmentEvidence : completeStoredEvidence(candidate, operationValidation, task, result.commit)) {
-            task.operationEvidence = developmentEvidence ?? candidate
-          } else {
-            let { checkpoint, progress } = resumeCheckpoint(task, operationValidation, result.commit, baseline, candidate)
-            let checkpointError
-            const saveCheckpoint = () => {
-              task.operationCheckpoint = checkpoint
-              try { persist('verifying') } catch (error) { checkpointError ??= error }
-            }
-            const recordPreflight = status => {
-              checkpoint.preflight = status
-              checkpoint.phase = status === 'ready'
-                ? (operationValidation.type === 'fix' && !checkpoint.baselineReproduced && !baseline ? 'baseline' : 'step')
-                : 'preflight'
-              delete checkpoint.finishedAt
-              delete checkpoint.stepElapsedMs
-              if (status === 'ready') checkpoint.stepStartedAt = Date.now()
-              saveCheckpoint()
-            }
-            const recordCheckpoint = assertion => {
-              const next = agentObservationProgress(operationValidation, [...checkpoint.assertions, assertion], result.commit, baseline)
-              if (next.accepted.length === checkpoint.assertions.length) {
-                checkpoint.rejectedSteps = [...checkpoint.rejectedSteps ?? [], {
-                  step: (() => { try { return JSON.parse(assertion?.line)?.step } catch {} })() ?? null,
-                  commit: (() => { try { return JSON.parse(assertion?.line)?.commit } catch {} })() ?? null,
-                  validOutput: typeof assertion?.id === 'string' && /^[a-f0-9]{64}$/u.test(assertion?.sha256),
-                }].slice(-8)
-                saveCheckpoint()
-                return false
-              }
-              checkpoint.assertions = next.accepted
-              checkpoint.completedSteps = next.steps.map((_, index) => index + 1)
-              checkpoint.baselineReproduced = next.observations.length > next.steps.length
-              checkpoint.phase = operationValidation.type === 'fix' && !checkpoint.baselineReproduced && !baseline ? 'baseline' : 'step'
-              checkpoint.lastRecordedAt = Date.now()
-              checkpoint.stepStartedAt = checkpoint.lastRecordedAt
-              saveCheckpoint()
-              return true
-            }
-            // 在调用新的 Agent 前先恢复并持久化进度，重启后的首张卡片不会回到 0/N。
-            saveCheckpoint()
-            if (task.attempt.kind !== 'verifying') {
-              flushOutput()
-              task.attempt = { id: randomUUID(), kind: 'verifying', startedAt: Date.now(), status: 'running' }
-              persist('verifying')
-              attemptId = task.attempt.id
-              output = ''
-              truncated = false
-            }
-            const evidence = await runner.verifyOperation({ task, project, signal, recordRun, recordSession, recordResult, recordOutput,
-              validation: operationValidation, commit: result.commit,
-              baselineObserved: Boolean(baseline) || progress.observations.length > progress.steps.length,
-              ...(progress.steps.length && { checkpoint: { completedSteps: progress.steps.map((_, index) => index + 1) } }),
-              recordCheckpoint, recordPreflight })
-            if (checkpointError) throw checkpointError
-            if (evidence.alternative) {
-              delete task.operationCheckpoint
-              task.manualReview = { kind: 'alternative', proposal: evidence.alternative, sourceStage: task.stage }
-              persist('manual_review')
-              return
-            }
-            try {
-              task.operationEvidence = bindEvidenceIdentity(agentOperationEvidence(operationValidation,
-                { ...evidence, assertions: [...checkpoint.assertions, ...evidence.assertions] }, result.commit, task.attempt, baseline), task, operationValidation)
-            } catch (error) {
-              if (error instanceof Error && /逐步工具记录|基线复现/u.test(error.message)) {
-                // Incomplete resumed evidence is revalidated by the SDK itself; only live
-                // observations rejected by recordCheckpoint belong in this diagnostic.
-                const accepted = new Set(checkpoint.assertions.map(item => item.id))
-                const rejected = (evidence.assertions ?? []).filter(item => !accepted.has(item.id)).map(item => {
-                  try {
-                    const record = JSON.parse(item.line)
-                    return { step: typeof record.step === 'number' && Number.isInteger(record.step) ? record.step : null, commit: record.commit }
-                  } catch { return { step: null, commit: null } }
-                })
-                const wrongStep = rejected.filter(item => item.step === null || item.step > validation.steps.length ||
-                  item.step < (operationValidation.type === 'fix' && !baseline ? 0 : 1)).length
-                const commitMismatch = rejected.filter(item => typeof item.step === 'number' && Number.isInteger(item.step) &&
-                  item.step >= 0 && item.step <= validation.steps.length && !wrongStep &&
-                  item.commit !== (item.step === 0 ? operationValidation.baseCommit : result.commit)).length
-                error.message += ` 主程序已接受 ${checkpoint.completedSteps.length}/${validation.steps.length} 步，验证 Agent 返回 ${evidence.assertions?.length ?? 0} 条工具记录，其中 ${commitMismatch} 条提交不匹配，${wrongStep} 条步骤编号不适用，${rejected.length - commitMismatch - wrongStep} 条缺少有效工具标识或观察结果。`
-                if (operationValidation.type === 'fix' && !baseline && !checkpoint.baselineReproduced) error.message += ' 缺少基线复现的工具记录。'
-                if (!evidence.assertions?.length) error.message += ' 未收到本轮工具输出中的逐步证据，模型自述不能代替实测记录。'
-                if (task.attempt.stopReason === 'max_output_tokens') error.message += ' 模型输出达到长度上限，记录可能不完整。'
-                if (checkpointError) error.message += ` 检查点保存失败：${checkpointError instanceof Error ? checkpointError.message.slice(0, 200) : '请重试。'}`
-              }
-              throw error
-            }
-            persist('verifying')
-          }
-        }
-        result.operationEvidence = task.operationEvidence
-        task.operationCheckpoint = {
-          commit: result.commit, operation: validation.operation, expected: validation.expected, steps: validation.steps,
-          baseCommit: operationValidation.baseCommit, requirementVersion: task.requirementVersion, planVersion: task.planVersion,
-          preflight: 'ready', phase: 'pushing', completedSteps: validation.steps.map((_, index) => index + 1),
-          baselineReproduced: Boolean(task.operationEvidence.baseline), startedAt: task.operationCheckpoint?.startedAt ?? Date.now(),
-          stepStartedAt: Date.now(),
-        }
-        delete task.operationCheckpoint.finishedAt
-        delete task.operationCheckpoint.stepElapsedMs
+      if (!task.delivery) {
+        const result = await verifyCommit(project, operationValidation)
+        if (!result) return
+        const pushed = await repository.push({ task, project, signal, result })
+        delete task.operationCheckpoint
+        task.work.pushedCommit = pushed.commit
+        task.result.remote = pushed.remote
+        task.delivery = { requirementVersion: task.requirementVersion, planVersion: task.planVersion }
         persist('verifying')
       }
-      const pushed = await repository.push({ task, project, signal, result })
+      const merged = await repository.integrate({ task, project, signal, result: task.result, savedCandidate: task.delivery.candidate,
+        recordCandidate(candidate) {
+          task.delivery.candidate = candidate
+          if (task.mergeResult?.commit !== candidate.commit) delete task.mergeResult
+          persist('verifying')
+        }, verifyCandidate: candidate => verifyCommit(project, operationValidation, candidate) })
+      if (!merged) return
+      if (task.mergeResult?.commit !== merged.commit) delete task.mergeResult
+      task.result.merged = merged
       delete task.operationCheckpoint
-      task.work.pushedCommit = pushed.commit
-      task.result.remote = pushed.remote
-      persist('review')
+      task.attempt.status = 'completed'
+      task.attempt.finishedAt ??= Date.now()
+      persist('delivered')
     } catch (error) {
       flushOutput()
       if (!running.signal.aborted) {

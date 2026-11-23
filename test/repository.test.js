@@ -83,3 +83,142 @@ test('local git worktree retains its baseline, verifies commits and records fail
   const featureWork = await repository.prepare({ ...input, task: feature })
   assert.match(featureWork.branch, /^feature\/9876efab_\d{8}$/)
 })
+
+async function deliveryFixture(t) {
+  const directory = await mkdtemp(join(tmpdir(), 'feishu-master-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const path = join(directory, 'repo')
+  const remote = join(directory, 'remote.git')
+  const git = async (cwd, ...args) => (await exec('git', args, { cwd })).stdout.trim()
+  await mkdir(path)
+  await git(directory, 'init', '--bare', remote)
+  await git(path, 'init', '-b', 'master')
+  await git(path, 'remote', 'add', 'origin', remote)
+  await git(path, 'config', 'user.email', 'test@example.test')
+  await git(path, 'config', 'user.name', 'Test')
+  async function commitFile(cwd, file, content) {
+    await writeFile(join(cwd, file), content)
+    await git(cwd, 'add', '--', file)
+    await git(cwd, 'commit', '-m', `Update ${file}`)
+    return git(cwd, 'rev-parse', 'HEAD')
+  }
+  const base = await commitFile(path, 'order.txt', 'baseline\n')
+  await git(path, 'push', 'origin', 'master')
+  const repository = createRepository(join(directory, 'worktrees'))
+  const task = { id: 'ABCD1234', type: 'feature' }
+  const project = { path, baseBranch: 'master', remote: 'origin', checks: [] }
+  const input = { task, project, signal: new AbortController().signal }
+  task.work = await repository.prepare(input)
+  const source = await commitFile(task.work.worktree, 'order.txt', 'feature\n')
+  const result = await repository.verify(input)
+  const pushed = await repository.push({ ...input, result })
+  task.work.pushedCommit = pushed.commit
+  result.remote = pushed.remote
+  const target = () => git(remote, 'rev-parse', 'refs/heads/master')
+  const sourceRef = () => git(remote, 'rev-parse', `refs/heads/${task.work.branch}`)
+  let contributor
+  async function advanceMaster(file, content) {
+    if (!contributor) {
+      contributor = join(directory, 'contributor')
+      await git(directory, 'clone', '-b', 'master', remote, contributor)
+      await git(contributor, 'config', 'user.email', 'test@example.test')
+      await git(contributor, 'config', 'user.name', 'Test')
+    }
+    const next = await commitFile(contributor, file, content)
+    await git(contributor, 'push', 'origin', 'master')
+    return next
+  }
+  let candidate
+  const verify = (candidate, operationValidation) => repository.verify({ ...input, candidate, operationValidation })
+  const integrate = (verifyCandidate = verify) => repository.integrate({ ...input, result, savedCandidate: candidate, verifyCandidate,
+    recordCandidate: value => { candidate = value } })
+  return { base, source, input, path, remote, git, target, sourceRef, advanceMaster, integrate, verify }
+}
+
+test('fast-forward delivery advances remote master without changing the local master or task HEAD', async t => {
+  const fixture = await deliveryFixture(t)
+  const { base, source, input, path, git, target, sourceRef, integrate } = fixture
+  assert.equal(await target(), base)
+  assert.equal(await sourceRef(), source)
+  const verifyCandidate = () => assert.fail('Already verified the fast-forward commit')
+  assert.deepEqual(await integrate(verifyCandidate), { branch: 'master', commit: source })
+  assert.deepEqual(await integrate(verifyCandidate), { branch: 'master', commit: source })
+  assert.equal(await target(), source)
+  assert.equal(await sourceRef(), source)
+  assert.equal(await git(path, 'rev-parse', 'refs/heads/master'), base)
+  assert.equal(await git(input.task.work.worktree, 'rev-parse', 'HEAD'), source)
+})
+
+test('diverged master publishes the actual validated merge tree and reuses it on retry', async t => {
+  const fixture = await deliveryFixture(t)
+  const { base, source, input, path, remote, git, target, sourceRef, advanceMaster, integrate, verify } = fixture
+  const master = await advanceMaster('master.txt', 'mainline\n')
+  const operationValidation = { kind: 'operation' }
+  input.project.checks.push({ label: 'Check exact merge tree', kind: 'operation', timeoutMs: 10000,
+    command: process.execPath, args: ['-e', `const { readFileSync } = require('node:fs');
+      const assert = require('node:assert/strict');
+      assert.equal(readFileSync('master.txt', 'utf8').trimEnd(), 'mainline');
+      assert.equal(readFileSync('order.txt', 'utf8').trimEnd(), 'feature');
+      console.log(process.env.FEISHU_VALIDATED_COMMIT)`] })
+  let candidateCommit
+  const delivered = await integrate(async candidate => {
+    candidateCommit = candidate.commit
+    assert.equal(await target(), master)
+    assert.equal(await git(candidate.worktree, 'rev-parse', 'HEAD'), candidate.commit)
+    const checked = await verify(candidate, operationValidation)
+    assert.equal(checked.checks[0].passed, true, checked.checks[0].output)
+    assert.equal(checked.operationReports[0]?.trim(), candidate.commit)
+    return checked
+  })
+  assert.deepEqual(delivered, { branch: 'master', commit: candidateCommit })
+  assert.equal(await target(), candidateCommit)
+  assert.equal(await git(remote, 'show', '-s', '--format=%P', candidateCommit), `${master} ${source}`)
+  assert.equal(await sourceRef(), source)
+  assert.equal(await git(path, 'rev-parse', 'refs/heads/master'), base)
+  assert.equal(await git(path, 'rev-parse', 'refs/remotes/origin/master'), base)
+  assert.doesNotMatch(await git(path, 'worktree', 'list', '--porcelain'), /merge-/u)
+  assert.deepEqual(await integrate(() => assert.fail('The persisted candidate is already on master')), delivered)
+})
+
+test('conflicts, failed checks, concurrent updates and remote rejection leave master unchanged by delivery', async t => {
+  await t.test('conflict', async t => {
+    const { source, sourceRef, target, advanceMaster, integrate } = await deliveryFixture(t)
+    const master = await advanceMaster('order.txt', 'conflicting change\n')
+    await assert.rejects(integrate(() => assert.fail('Conflicted candidate must stay unpublished')), /冲突/u)
+    assert.equal(await target(), master)
+    assert.equal(await sourceRef(), source)
+  })
+  await t.test('candidate checks fail', async t => {
+    const { source, sourceRef, input, target, advanceMaster, integrate } = await deliveryFixture(t)
+    const master = await advanceMaster('master.txt', 'mainline\n')
+    input.project.checks.push({ label: 'Fail merge checks', command: process.execPath, args: ['-e', 'process.exitCode = 1'], timeoutMs: 10000 })
+    await assert.rejects(integrate(), /合并候选未通过/u)
+    assert.equal(await target(), master)
+    assert.equal(await sourceRef(), source)
+  })
+  await t.test('master advances during validation', async t => {
+    const { source, sourceRef, target, advanceMaster, integrate, verify } = await deliveryFixture(t)
+    const oldMaster = await advanceMaster('master.txt', 'mainline\n')
+    let newMaster
+    await assert.rejects(integrate(async candidate => {
+      assert.equal(candidate.base, oldMaster)
+      const checked = await verify(candidate)
+      newMaster = await advanceMaster('master.txt', 'new mainline\n')
+      return checked
+    }), /在验证期间已变化/u)
+    assert.equal(await target(), newMaster)
+    assert.equal(await sourceRef(), source)
+    const delivered = await integrate(async candidate => {
+      assert.equal(candidate.base, newMaster)
+      return verify(candidate)
+    })
+    assert.equal(await target(), delivered.commit)
+  })
+  await t.test('remote rejects master updates', async t => {
+    const { base, source, sourceRef, remote, git, target, integrate } = await deliveryFixture(t)
+    await git(remote, 'config', 'receive.hideRefs', 'refs/heads/master')
+    await assert.rejects(integrate(), /更新 origin\/master 失败/u)
+    assert.equal(await target(), base)
+    assert.equal(await sourceRef(), source)
+  })
+})

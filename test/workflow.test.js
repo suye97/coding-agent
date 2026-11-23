@@ -27,6 +27,8 @@ async function fixture(t, operators = userId) {
   let sequence = 0
   let shouldPass = false
   let pushError = false
+  let mergeError = false
+  let mergeCandidate
   let commit = 'abcdef'
   let developmentStatus = 'implemented'
   let makeReports = scenario => scenario ? [report(observedReport(scenario))] : []
@@ -34,6 +36,7 @@ async function fixture(t, operators = userId) {
   let verificationTimeoutMs
   const attempts = []
   const pushes = []
+  const merges = []
   const verifications = []
   const project = { name: '订单', checks: [{ label: '单测' }, { label: '操作复现', kind: 'operation' }] }
   const projects = { resolve: name => name === project.name ? name : undefined, get: () => project }
@@ -62,15 +65,25 @@ async function fixture(t, operators = userId) {
     },
     async verify(options) {
       verifications.push(options)
-      const result = { branch: 'feishu/example', commit: changeReview?.commit ?? commit, changes: 'orders.js', checks: [{ label: '单测', passed: shouldPass }] }
+      const result = { branch: 'feishu/example', commit: options.candidate?.commit ?? changeReview?.commit ?? commit,
+        changes: 'orders.js', checks: [{ label: '单测', passed: shouldPass }] }
       if (changeReview) result.changeReview = { ...changeReview, approvalRequired: options.task.changeReviewApproval?.commit !== changeReview.commit }
-      if (shouldPass && !result.changeReview?.approvalRequired) result.operationReports = makeReports(options.operationValidation)
+      if (shouldPass && !result.changeReview?.approvalRequired) result.operationReports = makeReports(options.operationValidation, options.candidate)
       return result
     },
     async push({ result }) {
       if (pushError) { pushError = false; throw new Error('Git push 失败：认证失败。') }
       pushes.push(result.commit)
       return { remote: 'origin', commit: result.commit }
+    },
+    async integrate({ task, result, savedCandidate, recordCandidate, verifyCandidate }) {
+      assert.equal(store.get(task.id).work.pushedCommit, result.commit)
+      const candidate = mergeCandidate ?? { base: 'base', source: result.commit, commit: result.commit }
+      recordCandidate(candidate)
+      if (mergeError) { mergeError = false; throw new Error('远端 master 更新失败。') }
+      if (mergeCandidate && !await verifyCandidate(candidate)) return
+      merges.push({ commit: candidate.commit, savedCandidate })
+      return { branch: 'master', commit: candidate.commit }
     },
   }
   const channel = { async publish(value) { card = value.card; return value.messageId ?? 'om_card' } }
@@ -83,7 +96,7 @@ async function fixture(t, operators = userId) {
     token: card.actions.find(item => item.label === label)?.token, ...options,
   })
   return {
-    action, send, attempts, pushes, verifications, runner, project,
+    action, send, attempts, pushes, merges, verifications, runner, project,
     dispatch: createDispatchHandler({ appId: 'state', dataDirectory: directory }),
     card: () => card,
     work: () => workflow.work(),
@@ -91,6 +104,8 @@ async function fixture(t, operators = userId) {
     store: () => store,
     passChecks: () => { shouldPass = true },
     failPushOnce: () => { pushError = true },
+    failMergeOnce: () => { mergeError = true },
+    setMergeCandidate: value => { mergeCandidate = value },
     setCommit: value => { commit = value },
     setDevelopmentStatus: value => { developmentStatus = value },
     setOperationReports: factory => { makeReports = factory },
@@ -167,10 +182,11 @@ test('complete requests run automatically through verification and rework', asyn
   assert.equal(app.card().title, '任务阻塞')
   assert.match(app.card().text, /认证失败/)
   assert.deepEqual(app.pushes, [])
+  assert.deepEqual(app.merges, [])
   assert.equal(app.action('重试'), '已记录。')
   await app.work()
   await app.publish()
-  assert.equal(app.card().title, '开发交付')
+  assert.equal(app.card().title, '已交付')
   assert.match(app.card().text, /已推送 origin\/feishu\/example/)
   assert.match(app.card().text, /调用记录 workspace · 已完成/)
   assert.doesNotMatch(app.card().text, /Token/)
@@ -183,9 +199,90 @@ test('complete requests run automatically through verification and rework', asyn
   assert.equal(app.verifications.at(-1).requireNewCommit, true)
   assert.equal(app.verifications.at(-1).previousCommit, 'abcdef')
   assert.deepEqual(app.pushes, ['abcdef', 'abcdef'])
-  assert.equal(app.action('确认验收'), '已记录。')
+  assert.deepEqual(app.merges.map(({ commit }) => commit), ['abcdef', 'abcdef'])
+  assert.equal(app.card().title, '已交付')
+  assert.match(app.card().text, /已合入 origin\/master · abcdef/)
+  assert.equal(app.card().actions.some(({ label }) => label === '确认验收'), false)
+})
+
+test('a failed master update resumes from its persisted candidate without pushing the task branch again', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.failMergeOnce()
+  app.send('开发需求｜订单\n增加订单状态')
+  await app.work()
+  await app.work()
+  const [blocked] = app.store().inStage('blocked')
+  assert.deepEqual(app.pushes, ['abcdef'])
+  assert.deepEqual(app.merges, [])
+  assert.equal(blocked.result.remote, 'origin')
+  assert.equal(blocked.result.merged, undefined)
+  assert.equal(blocked.delivery.candidate.commit, 'abcdef')
+  app.restart()
   await app.publish()
-  assert.equal(app.card().title, '已验收')
+  assert.match(app.card().text, /远端 master 更新失败/)
+  assert.equal(app.action('重试'), '已记录。')
+  await app.work()
+  await app.publish()
+  assert.equal(app.card().title, '已交付')
+  assert.deepEqual(app.pushes, ['abcdef'])
+  assert.deepEqual(app.merges, [{ commit: 'abcdef', savedCandidate: blocked.delivery.candidate }])
+  assert.equal(app.verifications.length, 1)
+})
+
+test('a distinct master candidate requires its own operation evidence', async t => {
+  const app = await fixture(t)
+  app.passChecks()
+  app.setOperationReports((scenario, candidate) => candidate ? [] : [report(observedReport(scenario))])
+  const candidate = { base: 'master-head', source: 'abcdef', commit: 'merge-commit', worktree: 'merge-worktree' }
+  app.setMergeCandidate(candidate)
+  app.runner.verifyOperation = async ({ task, commit, recordRun, recordResult }) => {
+    assert.equal(task.work.worktree, 'merge-worktree')
+    assert.equal(commit, candidate.commit)
+    recordRun('merge-verifier', 'workspace')
+    recordResult({ stopReason: 'completed' })
+    return { observed: '合并候选操作正常', assertions: validation.steps.map((_, index) => ({
+      id: `merge-step-${index}`, sha256: 'a'.repeat(64), line: JSON.stringify({ commit, step: index + 1, observed: `合并后实测 ${index + 1}` }),
+    })) }
+  }
+  app.send('开发需求｜订单\n增加订单状态')
+  await app.work()
+  await app.work()
+  const [task] = app.store().inStage('delivered')
+  assert.equal(task.result.operationEvidence.commit, 'abcdef')
+  assert.equal(task.mergeResult.operationEvidence.commit, candidate.commit)
+  assert.equal(task.mergeResult.operationEvidence.childId, 'merge-verifier')
+  assert.deepEqual(task.result.merged, { branch: 'master', commit: candidate.commit })
+  const detail = app.dispatch('feishuDispatch/detail', { taskId: task.id }, undefined, { principal: { kind: 'owner' } }).value
+  assert.equal(detail.history.at(-1).stage, 'delivered')
+  assert.deepEqual(detail.history.at(-1).result.merged, task.result.merged)
+  assert.equal(detail.history.at(-1).result.mergeVerification.operationEvidence.commit, candidate.commit)
+})
+
+test('startup preserves legacy delivery history without integrating previous tasks', async t => {
+  const app = await fixture(t)
+  function saveLegacy(stage) {
+    app.send('开发需求｜订单\n增加订单状态')
+    const [task] = app.store().inStage('design_queued')
+    task.stage = stage
+    task.result = { branch: 'feature/old', commit: 'old', remote: 'origin' }
+    app.store().save(task)
+  }
+  saveLegacy('review')
+  await app.publish()
+  app.restart()
+  await app.work()
+  await app.publish()
+  assert.equal(app.card().title, '已推送')
+  assert.equal(app.store().inStage('pushed').length, 1)
+  assert.equal(app.card().actions.some(({ label }) => label === '确认验收'), false)
+  saveLegacy('accepted')
+  app.restart()
+  await app.work()
+  assert.equal(app.store().inChat(chatId).length, 0)
+  assert.equal(app.store().inStage('accepted')[0].result.merged, undefined)
+  assert.deepEqual(app.pushes, [])
+  assert.deepEqual(app.merges, [])
 })
 
 test('operation verification delegates when no project command reports and saves tool evidence before push', async t => {
@@ -201,7 +298,7 @@ test('operation verification delegates when no project command reports and saves
   app.send('开发需求｜订单\n点击保存后刷新页面')
   await app.work()
   await app.work()
-  const [task] = app.store().inStage('review')
+  const [task] = app.store().inStage('delivered')
   assert.equal(task.result.operationEvidence.childId, 'verify-child')
   assert.equal(task.result.operationEvidence.steps[1].outputSha256, 'a'.repeat(64))
   assert.deepEqual(app.pushes, ['abcdef'])
@@ -285,7 +382,7 @@ test('passing compile output and agent assertions cannot satisfy UI operation va
   assert.equal(app.action('重试'), '已记录。')
   await app.work()
   await app.publish()
-  assert.equal(app.card().title, '开发交付')
+  assert.equal(app.card().title, '已交付')
   assert.match(app.card().text, /实测操作 更新订单状态/)
   assert.match(app.card().text, /点击保存后收到订单页面状态/)
   assert.deepEqual(app.pushes, ['abcdef'])
@@ -330,7 +427,7 @@ test('development operation evidence on the same commit avoids a duplicate verif
   await app.publish()
   assert.equal(app.action('重试'), '已记录。')
   await app.work()
-  const [task] = app.store().inStage('review')
+  const [task] = app.store().inStage('delivered')
   assert.equal(task.result.operationEvidence.childId, 'develop-child')
   assert.equal(task.result.operationEvidence.commit, 'abcdef')
   assert.deepEqual(app.pushes, ['abcdef'])
@@ -396,7 +493,7 @@ test('failed UI verification persists validated steps and resumes without repeat
   assert.match(app.card().text, /UI 验证 验证依赖已就绪 · 已完成 1\/2 步 · 基线已复现/)
   assert.equal(app.action('重试'), '已记录。')
   await app.work()
-  const [task] = app.store().inStage('review')
+  const [task] = app.store().inStage('delivered')
   assert.equal(calls, 2)
   assert.equal(task.operationCheckpoint, undefined)
   assert.equal(task.result.operationEvidence.baseline, '基线仍显示旧值')
@@ -429,7 +526,7 @@ test('UI verification checkpoints are discarded when the commit changes', async 
   await app.publish()
   assert.equal(app.action('重试'), '已记录。')
   await app.work()
-  const [task] = app.store().inStage('review')
+  const [task] = app.store().inStage('delivered')
   assert.equal(task.result.commit, 'fedcba')
   assert.deepEqual(task.result.operationEvidence.steps.map(step => step.toolId), ['new-0', 'new-1'])
 })
@@ -455,7 +552,7 @@ test('stale or incomplete development evidence falls back to independent verific
   await app.work()
   await app.work()
   assert.equal(delegated, 1)
-  assert.equal(app.store().inStage('review')[0].result.operationEvidence.childId, 'verify-child')
+  assert.equal(app.store().inStage('delivered')[0].result.operationEvidence.childId, 'verify-child')
 })
 
 test('partial development evidence resumes at the first missing step with the same identity', async t => {
@@ -483,7 +580,7 @@ test('partial development evidence resumes at the first missing step with the sa
   await app.work()
   await app.work()
   assert.equal(calls, 1)
-  const [task] = app.store().inStage('review')
+  const [task] = app.store().inStage('delivered')
   assert.deepEqual(task.result.operationEvidence.steps.map(step => step.toolId), ['development-step-1', 'verification-step-2'])
 })
 
@@ -518,7 +615,7 @@ test('stored agent evidence with a stale plan identity cannot skip independent v
   assert.equal(app.action('重试'), '已记录。')
   await app.work()
   assert.equal(calls, 1)
-  assert.equal(app.store().inStage('review')[0].result.operationEvidence.childId, 'verify-child')
+  assert.equal(app.store().inStage('delivered')[0].result.operationEvidence.childId, 'verify-child')
 })
 
 test('a fix rework reuses its recorded baseline and only verifies the new result', async t => {
@@ -549,12 +646,12 @@ test('a fix rework reuses its recorded baseline and only verifies the new result
   app.send('修复缺陷｜订单\n保存后仍显示旧值')
   await app.work()
   await app.work()
-  assert.equal(app.store().inStage('review')[0].result.operationEvidence.baseline, '基线保存后仍是旧值')
+  assert.equal(app.store().inStage('delivered')[0].result.operationEvidence.baseline, '基线保存后仍是旧值')
   app.setCommit('fedcba')
   await app.publish()
   assert.equal(app.action('要求返工', { text: '补充边界情况' }), '已记录。')
   await app.work()
-  const [task] = app.store().inStage('review')
+  const [task] = app.store().inStage('delivered')
   assert.equal(verifications, 1)
   assert.equal(task.result.operationEvidence.childId, 'rework-child')
   assert.equal(task.result.operationEvidence.baseline, '基线保存后仍是旧值')
@@ -570,7 +667,7 @@ test('a backend fix uses regression checks rather than forcing a GUI verificatio
   await app.work()
   await app.work()
   assert.equal(app.verifications.at(-1).operationValidation, undefined)
-  assert.equal(app.store().inStage('review').length, 1)
+  assert.equal(app.store().inStage('delivered').length, 1)
   assert.deepEqual(app.pushes, ['abcdef'])
 })
 
@@ -589,7 +686,7 @@ test('a fix requires an actual baseline reproduction and a post-change observati
   await app.work()
   await app.publish()
   assert.equal(app.verifications.at(-1).operationValidation.baseCommit, 'base')
-  assert.equal(app.card().title, '开发交付')
+  assert.equal(app.card().title, '已交付')
   assert.match(app.card().text, /基线复现 保存后仍显示旧值/)
   assert.deepEqual(app.pushes, ['abcdef'])
 })

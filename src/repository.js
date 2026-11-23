@@ -1,11 +1,66 @@
 import { execFile } from 'node:child_process'
-import { lstat, mkdir, realpath } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, realpath, rmdir } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 import { inspectChanges } from './change-review.js'
 
 const exec = promisify(execFile)
 const gitOptions = ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), '-c', 'core.fsmonitor=false']
+const commitId = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u
+const masterRef = 'refs/heads/master'
+const gitExecution = { timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true }
+
+async function remoteRefs(worktree, remote, signal) {
+  async function run(...args) {
+    try {
+      const { stdout } = await exec('git', [...gitOptions, '-c', 'protocol.ext.allow=never', ...args], {
+        ...gitExecution, cwd: worktree, signal,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+      })
+      return stdout.trimEnd()
+    } catch {
+      signal.throwIfAborted()
+      throw new Error(`访问或更新远端 ${remote} 失败，请检查远端权限、分支保护、凭据和连接。`)
+    }
+  }
+  const urls = (await run('remote', 'get-url', '--push', '--all', remote)).split(/\r?\n/u).filter(Boolean)
+  if (urls.length !== 1) throw new Error(`远端 ${remote} 必须只有一个推送地址。`)
+  const [url] = urls
+  return {
+    async read(ref) {
+      const output = await run('ls-remote', '--refs', '--heads', '--', url, ref)
+      return output.split(/\r?\n/u).find(line => line.endsWith(`\t${ref}`))?.split('\t')[0]
+    },
+    fetch(ref) {
+      return run('fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', '--no-auto-maintenance', '--refmap=', '--', url, ref)
+    },
+    update(ref, previous, commit) {
+      return run('-c', 'push.followTags=false', '-c', 'push.recurseSubmodules=no', 'push', '--porcelain',
+        `--force-with-lease=${ref}:${previous ?? ''}`, '--', url, `${commit}:${ref}`)
+    },
+  }
+}
+
+async function hasCommit(worktree, signal, commit) {
+  try {
+    await git(worktree, signal, 'cat-file', '-e', `${commit}^{commit}`)
+    return true
+  } catch {
+    signal.throwIfAborted()
+    return false
+  }
+}
+
+async function isAncestor(worktree, signal, ancestor, commit) {
+  try {
+    await exec('git', [...gitOptions, 'merge-base', '--is-ancestor', ancestor, commit], { ...gitExecution, cwd: worktree, signal })
+    return true
+  } catch (error) {
+    signal.throwIfAborted()
+    if (error.code === 1) return false
+    throw new Error('无法核对合并提交的祖先关系。')
+  }
+}
 
 // 执行 Git 命令，并把可供任务卡片展示的错误限制为短消息。
 async function git(cwd, signal, ...args) {
@@ -95,11 +150,11 @@ export function createRepository(worktreeRoot) {
     return { ...work, prepared: true }
   }
 
-  async function reviewChanges({ task, worktree, base, commit, signal }) {
+  async function reviewChanges({ task, worktree, base, commit, signal, branchReviewBase = task.work?.pushedCommit }) {
     const diff = (...args) => git(worktree, signal, 'diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-relative', ...args)
     return inspectChanges({
       commit,
-      comparisons: [base, task.work?.pushedCommit].filter(Boolean),
+      comparisons: [base, branchReviewBase].filter(Boolean),
       requirement: task.requirement?.body,
       approval: task.changeReviewApproval,
       async diffEntries(from, to) {
@@ -125,16 +180,17 @@ export function createRepository(worktreeRoot) {
   async function matchesWorktree({ worktree, commit, branch, signal }) {
     const [head, currentBranch, status] = await Promise.all([
       git(worktree, signal, 'rev-parse', 'HEAD'),
-      git(worktree, signal, 'symbolic-ref', 'HEAD'),
+      git(worktree, signal, 'rev-parse', '--symbolic-full-name', 'HEAD'),
       worktreeStatus(worktree, signal),
     ])
-    return head === commit && currentBranch === `refs/heads/${branch}` && !status
+    return head === commit && currentBranch === (branch ? `refs/heads/${branch}` : 'HEAD') && !status
   }
 
   // 先审查已提交的改动，再执行可信项目配置指定的检查。
-  async function verify({ task, project, signal, previousCommit = task.work?.base, requireNewCommit = false, operationValidation }) {
-    const { worktree, branch, base } = await prepare({ task, project, signal })
+  async function verify({ task, project, signal, previousCommit = task.work?.base, requireNewCommit = false, operationValidation, candidate }) {
+    const { worktree, branch, base } = candidate ?? await prepare({ task, project, signal })
     const commit = await git(worktree, signal, 'rev-parse', 'HEAD')
+    if (candidate && commit !== candidate.commit) throw new Error('待验证的 master 合并候选已变化。')
     const status = await worktreeStatus(worktree, signal)
     const committed = await git(worktree, signal, 'diff', '--no-ext-diff', '--no-textconv', '--stat', base, commit, '--')
     const changes = [committed, status].filter(Boolean).join('\n')
@@ -146,14 +202,15 @@ export function createRepository(worktreeRoot) {
     const delta = requireNewCommit && !noNewCommit
       ? await git(worktree, signal, 'diff', '--no-ext-diff', '--no-textconv', '--stat', previousCommit, commit, '--')
       : committed
-    if (status || noNewCommit || !delta.trim()) {
+    if (status || noNewCommit || (!candidate && !delta.trim())) {
       cleanCheck.output = status ? '工作树还有未提交的改动。' : noNewCommit
         ? requireNewCommit ? '本轮返工没有产生新提交。' : '分支没有新增提交。'
         : '提交没有实际代码差异，禁止用空提交进入交付验证。'
       checks.push(cleanCheck)
       return result
     }
-    result.changeReview = await reviewChanges({ task, worktree, base, commit, signal })
+    result.changeReview = await reviewChanges({ task, worktree, base, commit, signal,
+      ...(candidate && { branchReviewBase: null }) })
     if (result.changeReview.approvalRequired) return result
     const snapshot = { worktree, commit, branch, signal }
     let unchanged = await matchesWorktree(snapshot)
@@ -192,7 +249,7 @@ export function createRepository(worktreeRoot) {
       throw new Error('验证未通过，禁止推送。')
     }
     const { worktree, branch, base, remote } = await prepare({ task, project, signal })
-    if (result.branch !== branch || !/^[0-9a-f]{40,64}$/.test(result.commit) || result.changeReview?.commit !== result.commit) {
+    if (result.branch !== branch || !commitId.test(result.commit) || result.changeReview?.commit !== result.commit) {
       throw new Error('验证结果与任务分支或改动审查不匹配。')
     }
     const commit = result.commit
@@ -200,38 +257,116 @@ export function createRepository(worktreeRoot) {
     if (!await matchesWorktree(snapshot)) throw new Error('验证后提交或工作树已变化，请重新验证。')
     const changeReview = await reviewChanges({ task, worktree, base, commit, signal })
     if (changeReview.approvalRequired) throw new Error('改动尚未通过人工审查，禁止推送。')
-    const remoteGit = async (...args) => {
-      try {
-        const { stdout } = await exec('git', [...gitOptions, '-c', 'protocol.ext.allow=never', ...args], {
-          cwd: worktree, signal, timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true,
-          env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
-        })
-        return stdout.trimEnd()
-      } catch {
-        signal.throwIfAborted()
-        throw new Error(`访问或推送远端 ${remote} 失败，请检查远端权限、凭据和连接。`)
-      }
-    }
-    const pushUrls = (await remoteGit('remote', 'get-url', '--push', '--all', remote)).split(/\r?\n/).filter(Boolean)
-    if (pushUrls.length !== 1) throw new Error(`远端 ${remote} 必须只有一个推送地址。`)
+    const refs = await remoteRefs(worktree, remote, signal)
     const ref = `refs/heads/${branch}`
-    const remoteHead = async () => {
-      const output = await remoteGit('ls-remote', '--heads', '--', pushUrls[0], ref)
-      return output.split(/\r?\n/).find(line => line.endsWith(`\t${ref}`))?.split('\t')[0]
-    }
-    const previous = await remoteHead()
+    if (ref === masterRef) throw new Error('任务分支不能是 master。')
+    const previous = await refs.read(ref)
     if (previous === commit) return { remote, commit }
-    if (previous !== task.work?.pushedCommit || (previous && !task.work?.pushedCommit)) {
+    if (previous !== task.work?.pushedCommit) {
       throw new Error(`远端 ${remote}/${branch} 已被其他提交占用或改动，请人工核对。`)
     }
     if (previous) await git(worktree, signal, 'merge-base', '--is-ancestor', previous, commit)
     if (!await matchesWorktree(snapshot)) throw new Error('验证后提交或工作树已变化，请重新验证。')
     // 原子核对预期远端提交，现有引用必须仍可快进。
-    await remoteGit('-c', 'push.followTags=false', '-c', 'push.recurseSubmodules=no', 'push', '--porcelain',
-      `--force-with-lease=${ref}:${previous ?? ''}`, '--', pushUrls[0], `${commit}:${ref}`)
-    if (await remoteHead() !== commit) throw new Error(`远端 ${remote}/${branch} 推送后提交不匹配。`)
+    await refs.update(ref, previous, commit)
+    if (await refs.read(ref) !== commit) throw new Error(`远端 ${remote}/${branch} 推送后提交不匹配。`)
     return { remote, commit }
   }
 
-  return { intent, prepare, verify, push }
+  async function createMergeCommit(worktree, signal, base, source) {
+    let tree
+    try {
+      tree = await git(worktree, signal, 'merge-tree', '--write-tree', '--no-messages', base, source)
+    } catch {
+      signal.throwIfAborted()
+      throw new Error('无法生成 master 合并候选。请检查分支是否有冲突、是否具有共同历史，以及 Git 是否支持 merge-tree --write-tree。')
+    }
+    if (!commitId.test(tree)) throw new Error('无法核对 master 合并候选的目录树。')
+    return git(worktree, signal, '-c', 'user.name=Feishu Delivery', '-c', 'user.email=delivery@localhost',
+      'commit-tree', tree, '--no-gpg-sign', '-p', base, '-p', source, '-m', 'Merge verified delivery into master')
+  }
+
+  async function verifyMergeWorktree(worktree, signal, candidate, verifyCandidate) {
+    const directory = await mkdtemp(join(worktreeRoot, 'merge-'))
+    const checkout = join(directory, 'checkout')
+    try {
+      await git(worktree, signal, 'worktree', 'add', '--detach', '--', checkout, candidate.commit)
+      const snapshot = { ...candidate, worktree: checkout }
+      const result = await verifyCandidate(snapshot)
+      if (!result) return false // 例如候选提交进入人工变更审批。
+      if (result.commit !== candidate.commit || result.changeReview?.commit !== candidate.commit ||
+          !result.checks?.length || !result.checks.every(check => check.passed) ||
+          !await matchesWorktree({ ...snapshot, signal })) {
+        throw new Error('master 合并候选未通过提交和验证结果核对。')
+      }
+      return true
+    } finally {
+      // 即使验证被取消，也清理由主程序创建的隔离工作树。
+      try {
+        if (await lstat(checkout).catch(error => { if (error.code !== 'ENOENT') throw error })) {
+          await git(worktree, new AbortController().signal, 'worktree', 'remove', '--force', '--', checkout)
+        }
+      } finally {
+        await rmdir(directory)
+      }
+    }
+  }
+
+  async function integrate({ task, project, signal, result, savedCandidate, recordCandidate, verifyCandidate }) {
+    const { worktree, branch, remote } = await prepare({ task, project, signal })
+    const source = result?.commit
+    const sourceRef = `refs/heads/${branch}`
+    if (sourceRef === masterRef || !commitId.test(source) || result.branch !== branch || result.remote !== remote ||
+        result.changeReview?.commit !== source || task.work.pushedCommit !== source ||
+        !result.checks?.length || !result.checks.every(check => check.passed) ||
+        !await matchesWorktree({ worktree, commit: source, branch, signal })) {
+      throw new Error('master 合并必须使用已验证并推送的任务提交。')
+    }
+    const refs = await remoteRefs(worktree, remote, signal)
+    const checkSource = async () => {
+      if (await refs.read(sourceRef) !== source) throw new Error(`远端任务分支 ${remote}/${branch} 已变化，无法交付。`)
+    }
+    const readMaster = async () => {
+      const target = await refs.read(masterRef)
+      if (!commitId.test(target)) throw new Error(`远端 ${remote}/master 不存在或无法核对。`)
+      if (!await hasCommit(worktree, signal, target)) {
+        // 只取目标对象，保留各本地分支、远端跟踪引用与 FETCH_HEAD。
+        await refs.fetch(masterRef)
+        if (!await hasCommit(worktree, signal, target)) throw new Error('远端 master 在读取期间已变化，请重试。')
+      }
+      return target
+    }
+    const merged = commit => ({ branch: 'master', commit })
+    const ancestor = (from, to) => isAncestor(worktree, signal, from, to)
+    await checkSource()
+    const base = await readMaster()
+    const saved = savedCandidate?.source === source && commitId.test(savedCandidate.commit) &&
+      await hasCommit(worktree, signal, savedCandidate.commit) ? savedCandidate : undefined
+    if (await ancestor(source, base)) {
+      return merged(saved && await ancestor(saved.commit, base) ? saved.commit : base)
+    }
+
+    const fastForward = await ancestor(base, source)
+    const commit = fastForward ? source : saved?.base === base ? saved.commit : await createMergeCommit(worktree, signal, base, source)
+    const candidate = { base, source, commit }
+    if (!fastForward && await git(worktree, signal, 'show', '-s', '--format=%P', commit) !== `${base} ${source}`) {
+      throw new Error('master 合并候选的父提交与任务记录不一致。')
+    }
+    recordCandidate(candidate)
+    if (!fastForward && !await verifyMergeWorktree(worktree, signal, candidate, verifyCandidate)) return
+    if (!await matchesWorktree({ worktree, commit: source, branch, signal })) throw new Error('合并期间任务提交或工作树已变化。')
+    await checkSource()
+    if (await refs.read(masterRef) !== base) throw new Error('远端 master 在验证期间已变化，请重试。')
+    // 父提交核对保证可快进，精确 lease 阻止读取后发生的竞态。
+    await refs.update(masterRef, base, commit).catch(error => {
+      signal.throwIfAborted()
+      throw new Error(`更新 ${remote}/master 失败。${error.message}`)
+    })
+    const current = await readMaster()
+    if (!await ancestor(commit, current)) throw new Error('远端 master 更新后未包含本轮交付提交。')
+    await checkSource()
+    return merged(commit)
+  }
+
+  return { intent, prepare, verify, push, integrate }
 }
