@@ -6,8 +6,8 @@ const prefix = 'feishuDispatch/'
 const failure = (code, message) => ({ ok: false, error: { code, message, details: {} } })
 
 export function dispatchDatabase(config) {
-  return config.appId && isAbsolute(config.dataDirectory)
-    ? join(config.dataDirectory, `${encodeURIComponent(config.appId)}.sqlite`)
+  return isAbsolute(config.dataDirectory)
+    ? join(config.dataDirectory, `${encodeURIComponent(config.appId || 'local')}.sqlite`)
     : null
 }
 
@@ -109,26 +109,5 @@ export function createDispatchHandler(config) {
     } catch {
       return failure('feishu-dispatch/read-failed', 'Could not read task records')
     }
-  }
-}
-
-export function registerDispatch(ctx, config) {
-  const handle = createDispatchHandler(config)
-  for (const method of ['list', 'detail']) {
-    const endpoint = `${prefix}${method}`
-    // Shared exact routes are admitted by Connection for authenticated owner Peers only.
-    ctx.connection.fetch.register({
-      path: `/api/${endpoint}`,
-      methods: ['POST'],
-      requestBody: 'buffered',
-      async fetch(request) {
-        const envelope = await request.json().catch(() => null)
-        if (envelope?.type !== 'client-request' || typeof envelope.rpcId !== 'string' || envelope.method !== endpoint) {
-          return new Response('Invalid request', { status: 400 })
-        }
-        const result = handle(endpoint, envelope.payload, request.signal, { principal: { kind: 'owner' } })
-        return Response.json({ type: 'server-response', rpcId: envelope.rpcId, result })
-      },
-    })
   }
 }

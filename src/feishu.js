@@ -319,12 +319,12 @@ export async function createFeishuChannel({ appId, appSecret, tapdCardSource, on
   let started = null;
   const downloadAttachment = createFeishuAttachmentDownloader({ appId, appSecret });
 
-  /** 将异步事件处理错误送交宿主，避免回调异常丢失。 */
+  /** 将异步事件处理错误送交主程序，避免回调异常丢失。 */
   function reportError(error) {
     try {
       onError(error);
     } catch {
-      // 宿主错误回调不应阻断 SDK 的事件分发。
+      // 主程序错误回调不应阻断 SDK 的事件分发。
     }
   }
 
@@ -416,13 +416,10 @@ export async function createFeishuChannel({ appId, appSecret, tapdCardSource, on
     /** 关闭长连接。 */
     async stop() {
       if (!started) return;
-      try {
-        await started;
-      } catch {
-        return;
-      } finally {
-        started = null;
-      }
+      const connecting = started;
+      started = null;
+      // 连接尚未完成时也不能卡住应用退出；迟到成功后立即补一次断开。
+      void connecting.then(() => channel.disconnect()).catch(() => {});
       await channel.disconnect();
     },
 

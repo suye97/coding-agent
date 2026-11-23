@@ -29,9 +29,8 @@ test('external provider prompt uses a validated path and no image bytes', async 
     assert.equal(ref, task.attachments[0])
     return { path: 'C:/private/prototype.png', bytes: Buffer.from('private-bytes'), mimeType: 'image/png', width: 10, height: 10 }
   })
-  assert.equal(prompt.length, 1)
-  assert.equal(prompt[0].type, 'text')
-  assert.match(prompt[0].text, /C:\/private\/prototype\.png/)
-  assert.doesNotMatch(prompt[0].text, /private-bytes/)
+  assert.equal(typeof prompt, 'string')
+  assert.match(prompt, /C:\/private\/prototype\.png/)
+  assert.doesNotMatch(prompt, /private-bytes/)
   await assert.rejects(composeImagePrompt('design', task, async () => ({})), /无法读取/)
 })

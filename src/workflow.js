@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { isOperatorId, operatorIds } from './operators.js'
-import { normalizeAlternative, normalizeValidation } from './harness.js'
+import { normalizeAlternative, normalizeValidation } from './agent.js'
 import { MAX_TASK_ATTACHMENTS, MAX_TASK_ATTACHMENT_BYTES } from './attachments.js'
 
 const evidencePrefix = 'FEISHU_OPERATION_EVIDENCE '
@@ -208,7 +208,7 @@ function invocation(task) {
   if (attempt.childId) lines.push(`委派 ID ${attempt.childId}`)
   lines.push(`开始时间 ${new Date(attempt.startedAt).toLocaleString('zh-CN', { hour12: false })}`)
   if (attempt.heartbeatAt && attempt.status === 'running') {
-    lines.push(`插件心跳 ${new Date(attempt.heartbeatAt).toLocaleString('zh-CN', { hour12: false })}`)
+    lines.push(`运行心跳 ${new Date(attempt.heartbeatAt).toLocaleString('zh-CN', { hour12: false })}`)
   }
   return lines
 }
@@ -237,7 +237,7 @@ function render(task, project) {
   const checkpoint = task.operationCheckpoint
   if (checkpoint && (stage === 'verifying' || (stage === 'blocked' && task.failedStage === 'verifying'))) {
     const environment = {
-      ready: '环境已就绪', creating: '正在创建隔离环境', launching: '正在启动隔离 Desktop', checking: '正在检查环境',
+      ready: '验证依赖已就绪', checking: '正在检查验证依赖',
     }[checkpoint.preflight] ?? '正在准备环境'
     const completed = checkpoint.completedSteps?.length ?? 0
     const current = Math.min(completed + 1, checkpoint.steps.length)
@@ -567,8 +567,9 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
       task.lastInvocation = { ...task.attempt }
       persist(task.stage)
     }
-    const recordSession = () => {
+    const recordSession = sessionId => {
       task.sessionCreated = true
+      if (sessionId) task.agentSessionId = sessionId
       persist(task.stage)
     }
     const heartbeat = setInterval(() => {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createDispatchHandler, dispatchDatabase, registerDispatch } from '../src/dispatch.js'
+import { createDispatchHandler, dispatchDatabase } from '../src/dispatch.js'
 import { openStore } from '../src/store.js'
 import { encodeCard, callCardApi } from '../src/feishu.js'
 
@@ -94,18 +94,4 @@ test('Feishu card delivery uses the JSON 2.0 submit field and persists safe resp
   } finally {
     store.close()
   }
-})
-
-test('dashboard registers exact owner-only Connection routes with matching RPC envelopes', async () => {
-  const routes = new Map()
-  registerDispatch({ connection: { fetch: { register(route) { routes.set(route.path, route) } } } }, { appId: '', dataDirectory: '' })
-  assert.deepEqual([...routes.keys()], ['/api/feishuDispatch/list', '/api/feishuDispatch/detail'])
-  const route = routes.get('/api/feishuDispatch/list')
-  const request = method => new Request(`http://localhost${route.path}`, {
-    method: 'POST', body: JSON.stringify({ type: 'client-request', rpcId: 'sample', method, payload: {} }),
-  })
-  assert.equal((await route.fetch(request('feishuDispatch/detail'))).status, 400)
-  assert.deepEqual(await (await route.fetch(request('feishuDispatch/list'))).json(), {
-    type: 'server-response', rpcId: 'sample', result: { ok: true, value: { status: 'unconfigured', items: [] } },
-  })
 })

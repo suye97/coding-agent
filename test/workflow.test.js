@@ -353,7 +353,7 @@ test('failed UI verification persists validated steps and resumes without repeat
   assert.equal(blocked.operationCheckpoint.baselineReproduced, true)
   app.restart()
   await app.publish()
-  assert.match(app.card().text, /UI 验证 环境已就绪 · 已完成 1\/2 步 · 基线已复现/)
+  assert.match(app.card().text, /UI 验证 验证依赖已就绪 · 已完成 1\/2 步 · 基线已复现/)
   assert.equal(app.action('重试'), '已记录。')
   await app.work()
   const [task] = app.store().inStage('review')

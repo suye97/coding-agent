@@ -1,5 +1,0 @@
-- insert:
-    - id: feishu-development-agent
-      name: '@local/dsh-feishu-development-agent'
-      config:
-        enabled: false
