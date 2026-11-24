@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgent } from '../src/agent.js'
-import { normalizeActivity, toolActivityKind } from '../src/agent-activity.js'
+import { normalizeActivity, summarizeActivities, toolActivityKind } from '../src/agent-activity.js'
 
 const model = { name: 'test-model', baseUrl: 'https://example.invalid', apiKey: 'unit-test-only' }
 const validation = { kind: 'operation', operation: '筛选订单', steps: ['点击筛选'], expected: '只显示已完成订单' }
@@ -44,9 +44,14 @@ test('independent agent streams text, persists its SDK session and resumes devel
   assert.equal(calls[0].cwd, project.path)
   assert.equal(calls[0].stage, 'design')
   assert.equal(calls[0].resumeSessionId, undefined)
+  assert.match(calls[0].prompt, /公开进展/)
+  assert.match(calls[0].prompt, /当前目标、已确认的事实和下一步/)
+  assert.match(calls[0].prompt, /不要输出私有推理/)
+  assert.match(calls[0].prompt, /最终回复仍必须满足对应阶段的 JSON 要求/)
   await runner.develop(input({ task: first.task }))
   assert.equal(calls[1].cwd, task.work.worktree)
   assert.equal(calls[1].resumeSessionId, 'session-1')
+  assert.match(calls[1].prompt, /公开进展/)
 })
 
 test('agent forwards bounded activity categories without tool payloads', async () => {
@@ -60,6 +65,23 @@ test('agent forwards bounded activity categories without tool payloads', async (
   assert.equal(toolActivityKind('UnknownTool'), 'other')
   assert.deepEqual(normalizeActivity({ ...activity, input: 'private path', output: 'private output' }), activity)
   assert.equal(normalizeActivity({ ...activity, kind: 'private-tool-name' }), undefined)
+})
+
+test('agent summarizes tool activity without repeating completed rows or leaking payloads', () => {
+  const active = { id: 'tool-1', kind: 'edit', status: 'running' }
+  const summary = summarizeActivities([
+    active,
+    { id: 'tool-2', kind: 'search', status: 'completed', input: 'private path' },
+    { id: 'tool-3', kind: 'search', status: 'error', output: 'private output' },
+    { id: 'tool-4', kind: 'private-tool-name', status: 'completed' },
+  ])
+  assert.equal(summary.total, 3)
+  assert.equal(summary.counts.edit, 1)
+  assert.equal(summary.counts.search, 2)
+  assert.equal(summary.counts.command, 0)
+  assert.deepEqual(summary.active, [active])
+  assert.equal(summary.errors, 1)
+  assert.equal(JSON.stringify(summary).includes('private'), false)
 })
 
 test('agent rejects invalid structured plans and undeclared alternative results', async () => {
@@ -102,6 +124,13 @@ test('verification returns only observation assertions emitted by real tool resu
   assert.deepEqual(accepted, [assertion])
   assert.match(calls[0].prompt, /只执行 validation\.steps/)
   assert.match(calls[0].prompt, /不要重复执行 npm ci/)
+  assert.match(calls[0].prompt, /公开进展/)
+  assert.match(calls[0].prompt, /本轮需要由工具结果补齐的证据编号：1。/)
+  assert.match(calls[0].prompt, /行为断言和证据输出放进同一个实际操作程序/)
+  assert.match(calls[0].prompt, /截图和肉眼查看只能作为辅助/)
+  assert.match(calls[0].prompt, /最终回复前逐项核对/)
+  assert.match(calls[0].prompt, /重新执行该步的实际操作断言/)
+  assert.match(calls[0].prompt, /不得用独立的 echo 或 printf/)
   assert.doesNotMatch(calls[0].prompt, /profile|Provider|宿主/)
 })
 
@@ -129,6 +158,14 @@ test('verification uses the prepared Electron distribution and releases it when 
   })
   await assert.rejects(runner.verifyOperation(input({ commit: 'commit-a', validation, recordPreflight: stage => events.push(stage) })), /验证调用中断/)
   assert.deepEqual(events, ['checking', 'ready', 'model', 'disposed'])
+})
+
+test('verification evidence checklist only requires unfinished steps', async () => {
+  const resumedValidation = { ...validation, steps: ['第一步', '第二步', '第三步'] }
+  const { runner, calls } = fixture({ status: 'passed', observed: '第二步实际结果正确' })
+  await runner.verifyOperation(input({ commit: 'commit-a', validation: resumedValidation, checkpoint: { completedSteps: [1, 3] } }))
+  assert.match(calls[0].prompt, /本轮需要由工具结果补齐的证据编号：2。/)
+  assert.doesNotMatch(calls[0].prompt, /本轮需要由工具结果补齐的证据编号：1、2、3/)
 })
 
 test('verification startup budget aborts an agent that never initializes', async () => {
@@ -165,6 +202,58 @@ test('verification initializes resumed sessions and cancels the startup budget o
   output = await runner.verifyOperation(input({ task: resumed, commit: 'commit-a', validation }))
   assert.equal(output.observed, '实际界面结果正确')
   assert.equal(calls, 1)
+})
+
+test('active verification is not killed by the legacy per-step evidence deadline', async () => {
+  const { runner } = fixture({ status: 'passed', observed: '重启后历史详情仍保留' }, {
+    verificationStepTimeoutMs: 10,
+    verificationIdleTimeoutMs: 200,
+    verificationTimeoutMs: 2000,
+    prepareOperation: async () => {},
+    execute: async request => {
+      request.onSession('session-1')
+      for (let index = 0; index < 6; index++) {
+        await new Promise(resolve => setTimeout(resolve, 25))
+        request.onActivity({ id: `tool-${index}`, kind: 'other', status: 'running' })
+        request.onActivity({ id: `tool-${index}`, kind: 'other', status: 'completed' })
+      }
+      return { text: JSON.stringify({ status: 'passed', observed: '重启后历史详情仍保留' }), sessionId: 'session-1', stopReason: 'completed' }
+    },
+  })
+  const result = await runner.verifyOperation(input({ commit: 'commit-a', validation }))
+  assert.equal(result.observed, '重启后历史详情仍保留')
+})
+
+test('verification without model or tool activity still reaches the idle budget', async () => {
+  const runner = createAgent({
+    getModel: async () => model,
+    prepareOperation: async () => {},
+    verificationIdleTimeoutMs: 20,
+    verificationTimeoutMs: 1000,
+    execute: request => {
+      request.onSession('session-1')
+      return new Promise((resolve, reject) => request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }))
+    },
+  })
+  await assert.rejects(runner.verifyOperation(input({ commit: 'commit-a', validation })), /长时间没有进展/)
+})
+
+test('continuous verification activity cannot exceed the total budget', async () => {
+  const runner = createAgent({
+    getModel: async () => model,
+    prepareOperation: async () => {},
+    verificationIdleTimeoutMs: 200,
+    verificationTimeoutMs: 40,
+    execute: request => {
+      request.onSession('session-1')
+      const interval = setInterval(() => request.onActivity({ id: 'tool-active', kind: 'other', status: 'running' }), 5)
+      return new Promise((resolve, reject) => request.signal.addEventListener('abort', () => {
+        clearInterval(interval)
+        reject(request.signal.reason)
+      }, { once: true }))
+    },
+  })
+  await assert.rejects(runner.verifyOperation(input({ commit: 'commit-a', validation })), /操作验证超过时间上限/)
 })
 
 test('agent cancellation reaches the utility process and preserves structured errors', async () => {

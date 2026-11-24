@@ -82,14 +82,11 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .run-status { font-size: 10px; color: var(--muted); }
 .run-status.running { color: var(--accent); }
 .run-meta { color: var(--muted); font-size: 10px; margin: 8px 0 12px; }
-.activity-list { list-style: none; margin: 12px 0 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--canvas); }
-.activity-item { display: flex; align-items: center; gap: 8px; min-height: 26px; color: var(--muted); font-size: 11px; }
-.activity-item::before { content: ""; width: 5px; height: 5px; flex: 0 0 auto; border-radius: 50%; background: var(--control-line); }
-.activity-item.running { color: var(--accent); }
-.activity-item.running::before { background: var(--accent); }
-.activity-item.error::before { background: var(--danger); }
-.activity-name { color: var(--ink); }
-.activity-status { margin-left: auto; font-size: 10px; }
+.activity-summary { display: flex; align-items: baseline; gap: 12px; margin-top: 12px; padding: 9px 0 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.activity-current { color: var(--ink); }
+.activity-summary.running .activity-current { color: var(--accent); }
+.activity-summary.error .activity-current { color: var(--danger); }
+.activity-counts { margin-left: auto; color: var(--muted); font-size: 10px; text-align: right; }
 .model-output { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.85 "Cascadia Code", "Microsoft YaHei UI", monospace; color: var(--ink); background: var(--canvas); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 18px 20px; margin: 12px 0 0; max-height: 520px; overflow-y: auto; }
 .cursor { color: var(--accent); animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }

@@ -13,7 +13,7 @@ async function fileType(path) {
   }
 }
 
-export async function prepareOperationElectron({ cwd, signal, execute = exec }) {
+export async function prepareOperationElectron({ cwd, signal, execute = exec, environment = process.env }) {
   const executable = executablePaths[process.platform]
   if (!executable) throw new Error('UI 验证预检失败：当前平台没有可用的 Electron 运行时。')
   const directory = join(cwd, 'node_modules', 'electron')
@@ -27,7 +27,7 @@ export async function prepareOperationElectron({ cwd, signal, execute = exec }) 
   const pathFile = join(directory, 'path.txt')
   const options = { cwd, signal, windowsHide: true, maxBuffer: 256 * 1024 }
   const ignored = new Set(['ELECTRON_RUN_AS_NODE', 'ELECTRON_OVERRIDE_DIST_PATH', 'ELECTRON_SKIP_BINARY_DOWNLOAD'])
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !ignored.has(name.toUpperCase())))
+  const env = Object.fromEntries(Object.entries(environment).filter(([name]) => !ignored.has(name.toUpperCase())))
   const assertOrdinaryPaths = async () => {
     const distEntry = await fileType(dist)
     const pathEntry = await fileType(pathFile)
@@ -45,12 +45,22 @@ export async function prepareOperationElectron({ cwd, signal, execute = exec }) 
     const installer = join(directory, 'install.js')
     if (!(await fileType(installer))?.isFile()) throw new Error('UI 验证预检失败：Electron npm 包缺少运行时安装入口。')
     const attempts = env.ELECTRON_MIRROR ? [env] : [env, { ...env, ELECTRON_MIRROR: 'https://npmmirror.com/mirrors/electron/' }]
+    // @electron/get ignores HTTP(S)_PROXY unless explicitly enabled. Preserve an explicit user setting.
+    const useProxy = env.ELECTRON_GET_USE_PROXY === undefined && Object.keys(env)
+      .some(name => ['http_proxy', 'https_proxy'].includes(name.toLowerCase()))
     let failure
     for (const attemptEnv of attempts) {
       try {
-        // Electron's own Node mode avoids depending on a shell-specific Node installation.
-        // Limit ELECTRON_RUN_AS_NODE to the installer; target runtime probes must stay Electron.
-        await execute(process.execPath, [installer], { ...options, env: { ...attemptEnv, ELECTRON_RUN_AS_NODE: '1' }, timeout: 180_000 })
+        // Use the system Node that powers npm preflight; embedded Node mode can exit before extraction finishes.
+        // Installer network overrides must not leak into target runtime probes.
+        await execute('node', [installer], {
+          ...options,
+          env: {
+            ...attemptEnv,
+            ...(useProxy ? { ELECTRON_GET_USE_PROXY: '1' } : {}),
+          },
+          timeout: 180_000,
+        })
         failure = undefined
         break
       } catch (error) {
@@ -59,8 +69,9 @@ export async function prepareOperationElectron({ cwd, signal, execute = exec }) 
       }
     }
     if (failure) {
-      const code = String(failure?.code ?? '未知错误').replace(/[^a-z0-9_.-]/giu, '').slice(0, 40) || '未知错误'
-      throw new Error(`UI 验证预检失败：无法下载或安装 Electron ${version} 可执行文件 (${code})，请检查下载缓存、网络和镜像。`)
+      const reason = failure?.killed && failure?.signal === 'SIGTERM' ? 'TIMEOUT' : failure?.code ?? failure?.errno ?? failure?.signal ?? '未知错误'
+      const code = String(reason).replace(/[^a-z0-9_.-]/giu, '').slice(0, 40) || '未知错误'
+      throw new Error(`UI 验证预检失败：无法下载或安装 Electron ${version} 可执行文件 (${code})，请检查下载缓存、网络、代理和镜像。`)
     }
     if (!(await installed())) throw new Error(`UI 验证预检失败：Electron ${version} 安装后仍缺少可执行文件。`)
   }

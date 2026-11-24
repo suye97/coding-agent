@@ -7,3 +7,10 @@ export interface AgentActivity {
 }
 export function toolActivityKind(name: unknown): AgentActivityKind
 export function normalizeActivity(item: unknown): AgentActivity | undefined
+export interface AgentActivitySummary {
+  total: number
+  counts: Record<AgentActivityKind, number>
+  active: AgentActivity[]
+  errors: number
+}
+export function summarizeActivities(items: unknown): AgentActivitySummary

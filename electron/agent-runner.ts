@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { isAbsolute, join, relative, sep } from 'node:path'
@@ -6,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { toolActivityKind } from '../src/agent-activity.js'
+import { commandToolObservations, observationsFromFile } from '../src/agent-evidence.js'
 
 interface StartMessage {
   type: 'start'
@@ -49,15 +49,6 @@ function packagedWindowsExecutable(): string | undefined {
 }
 
 function send(message: Record<string, unknown>) { port.postMessage(message) }
-function textFromToolResult(content: unknown) {
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return ''
-  return content.map(block => {
-    if (typeof block === 'string') return block
-    if (block && typeof block === 'object' && 'type' in block && block.type === 'text' && 'text' in block) return String(block.text)
-    return ''
-  }).join('\n')
-}
 
 async function run(message: StartMessage) {
   const { id, input } = message
@@ -93,6 +84,7 @@ async function run(message: StartMessage) {
     let sessionId = input.resumeSessionId
     let initialized = false
     const activities = new Map<string, { kind: string; status: string }>()
+    const backgroundOutputs = new Set<string>()
     const startActivity = (toolId: unknown, name: unknown) => {
       if (typeof toolId !== 'string' || activities.has(toolId)) return
       const item = { kind: toolActivityKind(name), status: 'running' }
@@ -131,11 +123,24 @@ async function run(message: StartMessage) {
           if (block.type !== 'tool_result') continue
           finishActivity(block.tool_use_id, Boolean(block.is_error))
           if (block.is_error) continue
-          const text = textFromToolResult(block.content)
-          for (const line of text.split(/\r?\n/u)) {
-            if (!line.startsWith('FEISHU_AGENT_OBSERVATION ') || line.length > 10_000) continue
-            send({ type: 'assertion', id, item: { id: block.tool_use_id, line: line.slice('FEISHU_AGENT_OBSERVATION '.length), sha256: createHash('sha256').update(text).digest('hex') } })
-          }
+          const items = await commandToolObservations({
+            id: block.tool_use_id,
+            kind: activities.get(block.tool_use_id)?.kind ?? 'other',
+            content: block.content,
+            result: event.tool_use_result,
+          })
+          for (const item of items) send({ type: 'assertion', id, item })
+        }
+      }
+      if (event.type === 'system' && event.subtype === 'task_notification' && event.status === 'completed' &&
+          typeof event.tool_use_id === 'string' && activities.get(event.tool_use_id)?.kind === 'command' &&
+          !backgroundOutputs.has(event.tool_use_id)) {
+        backgroundOutputs.add(event.tool_use_id)
+        try {
+          const items = await observationsFromFile(event.tool_use_id, event.output_file)
+          for (const item of items) send({ type: 'assertion', id, item })
+        } catch {
+          // A missing task output cannot be replaced by model text or an arbitrary Read result.
         }
       }
       if (event.type === 'result') {

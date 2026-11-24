@@ -21,6 +21,7 @@ export function createAgent(options: {
   prepareOperation?: (input: { cwd: string; signal: AbortSignal }) => Promise<unknown>
   verificationTimeoutMs?: number
   verificationIdleTimeoutMs?: number
+  /** @deprecated Active steps use the idle and total verification budgets. */
   verificationStepTimeoutMs?: number
   verificationStartupTimeoutMs?: number
 }): { design(input: any): Promise<any>; develop(input: any): Promise<any>; verifyOperation(input: any): Promise<any> }

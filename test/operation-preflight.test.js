@@ -101,8 +101,8 @@ test('npm cache hits still repair and check a missing Electron binary', { skip: 
     commands.push(file)
     assert.equal(env.ELECTRON_SKIP_BINARY_DOWNLOAD, undefined)
     assert.equal(env.ELECTRON_OVERRIDE_DIST_PATH, undefined)
-    if (file === process.execPath) {
-      assert.equal(env.ELECTRON_RUN_AS_NODE, '1')
+    if (file === 'node') {
+      assert.equal(env.ELECTRON_RUN_AS_NODE, undefined)
       assert.deepEqual(args, [installer])
       await installBinary()
       return { stdout: '' }
@@ -121,7 +121,7 @@ test('npm cache hits still repair and check a missing Electron binary', { skip: 
   await rm(binary)
   const second = await prepareOperationEnvironment(input)
   assert.equal(second.cached, true)
-  assert.deepEqual(commands, [process.execPath, binary, process.execPath, binary])
+  assert.deepEqual(commands, ['node', binary, 'node', binary])
   assert.equal(installs, 1)
 })
 
@@ -130,14 +130,14 @@ test('Electron preflight reports a missing binary when the installer exits witho
   await assert.rejects(prepareOperationElectron({ cwd, execute: async () => ({ stdout: '' }) }), /安装后仍缺少可执行文件/)
 })
 
-test('Electron installer retries the exact version with a fixed mirror and isolates Node mode', { skip: !electronExecutable }, async t => {
+test('Electron installer retries the exact version with a fixed mirror and isolates installer overrides', { skip: !electronExecutable }, async t => {
   const { cwd, installer, installBinary } = await electronFixture(t)
   const mirrors = []
   const runtime = await prepareOperationElectron({ cwd, execute: async (file, args, { env }) => {
-    if (file === process.execPath) {
+    if (file === 'node') {
       mirrors.push(env.ELECTRON_MIRROR)
       assert.deepEqual(args, [installer])
-      assert.equal(env.ELECTRON_RUN_AS_NODE, '1')
+      assert.equal(env.ELECTRON_RUN_AS_NODE, undefined)
       if (mirrors.length === 1) throw Object.assign(new Error('private installer output'), { code: 1 })
       await installBinary()
       return { stdout: '' }
@@ -147,6 +147,62 @@ test('Electron installer retries the exact version with a fixed mirror and isola
   } })
   assert.equal(runtime.electronDist, join(cwd, 'node_modules', 'electron', 'dist'))
   assert.deepEqual(mirrors, [undefined, 'https://npmmirror.com/mirrors/electron/'])
+})
+
+test('Electron installer enables an existing proxy only for installation', { skip: !electronExecutable }, async t => {
+  const { cwd, installBinary } = await electronFixture(t)
+  const runtime = await prepareOperationElectron({
+    cwd,
+    environment: { HTTPS_PROXY: 'http://private-proxy.invalid' },
+    execute: async (file, args, { env }) => {
+      if (file === 'node') {
+        assert.equal(env.ELECTRON_GET_USE_PROXY, '1')
+        assert.equal(env.HTTPS_PROXY, 'http://private-proxy.invalid')
+        assert.equal(env.ELECTRON_RUN_AS_NODE, undefined)
+        await installBinary()
+        return { stdout: '' }
+      }
+      assert.equal(env.ELECTRON_GET_USE_PROXY, undefined)
+      assert.equal(env.ELECTRON_RUN_AS_NODE, undefined)
+      return { stdout: 'v40.10.6\n' }
+    },
+  })
+  assert.match(runtime.electronDist, /dist$/u)
+})
+
+test('Electron installer preserves an explicit proxy mode setting', { skip: !electronExecutable }, async t => {
+  const { cwd, installBinary } = await electronFixture(t)
+  await prepareOperationElectron({
+    cwd,
+    environment: { HTTP_PROXY: 'http://private-proxy.invalid', ELECTRON_GET_USE_PROXY: '' },
+    execute: async (file, args, { env }) => {
+      if (file === 'node') {
+        assert.equal(env.ELECTRON_GET_USE_PROXY, '')
+        await installBinary()
+        return { stdout: '' }
+      }
+      return { stdout: 'v40.10.6\n' }
+    },
+  })
+})
+
+test('Electron installer reports a bounded timeout diagnostic', { skip: !electronExecutable }, async t => {
+  const { cwd } = await electronFixture(t)
+  let attempts = 0
+  await assert.rejects(prepareOperationElectron({
+    cwd,
+    environment: {},
+    execute: async () => {
+      attempts++
+      throw Object.assign(new Error('private installer output'), { code: null, killed: true, signal: 'SIGTERM' })
+    },
+  }), error => {
+    assert.match(error.message, /Electron 40\.10\.6.*\(TIMEOUT\)/u)
+    assert.match(error.message, /网络、代理和镜像/u)
+    assert.doesNotMatch(error.message, /private installer output/u)
+    return true
+  })
+  assert.equal(attempts, 2)
 })
 
 test('Windows Electron preflight provides and cleans an independent distribution when the local binary cannot start', { skip: process.platform !== 'win32' }, async t => {
