@@ -87,12 +87,13 @@ function ProcessView({ entries, outputs }: { entries: TaskDetail['timeline']; ou
           <span className="activity-current">{activityState}</span>
           <span className="activity-counts">{activitySummary.total} 项{activityCounts && ` · ${activityCounts}`}</span>
         </div>}
-        {activitySummary.failures.length > 0 && <details className="activity-failures">
-          <summary>查看失败诊断（{activitySummary.failures.length}）</summary>
-          <p>仅显示脱敏后的参数与错误摘要，不显示私有推理或凭据。</p>
-          {activitySummary.failures.map(failure => <section key={failure.id}>
-            <strong>{failure.name ?? activityLabels[failure.kind]}</strong>
-            <pre>{failure.diagnostic || '工具返回失败，但未提供错误正文。'}</pre>
+        {activitySummary.details.length > 0 && <details className="activity-failures activity-details" open={live}>
+          <summary>工具明细（{activitySummary.details.length}）</summary>
+          <p>模型公开进展提供决策摘要；工具参数与结果已脱敏，不显示私有推理或凭据。</p>
+          {activitySummary.details.map(activity => <section key={activity.id} className={activity.status}>
+            <strong>{activity.name ?? activityLabels[activity.kind]}</strong>
+            <span>{activity.status === 'running' ? '正在执行' : activity.status === 'error' ? '执行失败' : '执行完成'}</span>
+            <pre>{activity.diagnostic || (activity.status === 'running' ? '等待工具参数…' : '无文本输出。')}</pre>
           </section>)}
         </details>}
         {output?.truncated && <p className="output-note">仅保留本次调用最近的输出片段。</p>}

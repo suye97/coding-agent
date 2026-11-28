@@ -93,6 +93,14 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .activity-failures section { margin-top: 8px; border-left: 2px solid var(--danger); padding-left: 12px; }
 .activity-failures section strong { color: var(--ink); font-size: 12px; }
 .activity-failures pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto; margin: 6px 0 0; padding: 10px 12px; background: var(--canvas); color: var(--danger); font: 11px/1.7 "Cascadia Code", "Microsoft YaHei UI", monospace; }
+.activity-details summary { color: var(--ink); }
+.activity-details section { border-left-color: var(--line); }
+.activity-details section.error { border-left-color: var(--danger); }
+.activity-details section.running { border-left-color: var(--accent); }
+.activity-details section > span { margin-left: 10px; color: var(--muted); font-size: 10px; }
+.activity-details section.error > span { color: var(--danger); }
+.activity-details pre { color: var(--ink); }
+.activity-details section.error pre { color: var(--danger); }
 .model-output { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.85 "Cascadia Code", "Microsoft YaHei UI", monospace; color: var(--ink); background: var(--canvas); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 18px 20px; margin: 12px 0 0; max-height: 520px; overflow-y: auto; }
 .cursor { color: var(--accent); animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }

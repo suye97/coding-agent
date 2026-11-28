@@ -10,6 +10,29 @@ const commitId = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u
 const masterRef = 'refs/heads/master'
 const gitExecution = { timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true }
 
+export function formatRemoteFailure(remote, args, error) {
+  const operation = args.includes('push') ? 'push' : args.includes('fetch') ? 'fetch' : args.includes('ls-remote') ? 'ls-remote' : 'remote'
+  const action = { push: `更新远端 ${remote} 失败`, fetch: `获取远端 ${remote} 引用失败`,
+    'ls-remote': `访问远端 ${remote} 失败`, remote: `读取远端 ${remote} 配置失败` }[operation]
+  const raw = [error?.stderr, error?.stdout].filter(value => typeof value === 'string' && value.trim()).join('\n') || error?.message || ''
+  const detail = raw
+    .replace(/(https?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/giu, '$1[已隐藏]@')
+    .replace(/([?&](?:access_token|token|password|auth)=)[^&\s]+/giu, '$1[已隐藏]')
+    .replace(/\b(Bearer|Basic)\s+[a-z0-9._~+/=-]+/giu, '$1 [已隐藏]')
+    .replace(/((?:token|password|passwd|credential)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/giu, '$1[已隐藏]')
+    .trim().slice(-700)
+  const reason = /authentication failed|could not read username|terminal prompts disabled|invalid credentials|publickey/iu.test(raw)
+    ? 'Git 认证失败，请检查本机凭据管理器和远端账号权限。'
+    : /protected branch|pre-receive hook declined|permission denied|403|forbidden/iu.test(raw)
+      ? '远端拒绝写入，请检查分支保护、合并请求要求和账号权限。'
+      : /non-fast-forward|fetch first|stale info|remote ref updated/iu.test(raw)
+        ? '远端引用已变化，请核对最新分支状态后重试。'
+        : /could not resolve host|timed out|connection|network|failed to connect|unable to access/iu.test(raw)
+          ? '无法连接远端，请检查网络、代理和远端地址。'
+          : '请根据下方 Git 错误检查远端配置和仓库状态。'
+  return new Error(`${action}：${reason}${detail ? `\nGit：${detail}` : ` (${error?.code ?? error?.signal ?? '未知错误'})`}`)
+}
+
 async function remoteRefs(worktree, remote, signal) {
   async function run(...args) {
     try {
@@ -18,9 +41,9 @@ async function remoteRefs(worktree, remote, signal) {
         env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
       })
       return stdout.trimEnd()
-    } catch {
+    } catch (error) {
       signal.throwIfAborted()
-      throw new Error(`访问或更新远端 ${remote} 失败，请检查远端权限、分支保护、凭据和连接。`)
+      throw formatRemoteFailure(remote, args, error)
     }
   }
   const urls = (await run('remote', 'get-url', '--push', '--all', remote)).split(/\r?\n/u).filter(Boolean)

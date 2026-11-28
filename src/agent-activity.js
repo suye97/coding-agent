@@ -18,7 +18,7 @@ export function normalizeActivity(item) {
   return {
     id: item.id, kind: item.kind, status: item.status,
     ...(typeof item.name === 'string' && /^[\w.:+-]{1,80}$/u.test(item.name) && { name: item.name }),
-    ...(item.status === 'error' && typeof item.diagnostic === 'string' && item.diagnostic.trim() && {
+    ...(typeof item.diagnostic === 'string' && item.diagnostic.trim() && {
       diagnostic: item.diagnostic.slice(0, 3000),
     }),
   }
@@ -26,10 +26,12 @@ export function normalizeActivity(item) {
 
 const inputFields = {
   Bash: ['command'], Read: ['file_path', 'offset', 'limit'],
-  Edit: ['file_path'], Write: ['file_path'], NotebookEdit: ['notebook_path'],
-  Grep: ['pattern', 'path', 'glob'], Glob: ['pattern', 'path'],
+  Edit: ['file_path', 'old_string', 'new_string'], Write: ['file_path', 'content'], NotebookEdit: ['notebook_path'],
+  Grep: ['pattern', 'path', 'glob'], Glob: ['pattern', 'path'], TodoWrite: ['todos'],
+  Agent: ['description', 'prompt'],
 }
-const inputLabels = { command: '命令', file_path: '文件', notebook_path: '文件', path: '目录', pattern: '匹配', glob: '范围', offset: '起始行', limit: '行数' }
+const inputLabels = { command: '命令', file_path: '文件', notebook_path: '文件', path: '目录', pattern: '匹配', glob: '范围', offset: '起始行', limit: '行数',
+  old_string: '原内容', new_string: '新内容', content: '内容', todos: '公开计划', description: '任务', prompt: '执行说明' }
 
 function sanitize(value, secrets = [], limit = 1800) {
   let text = String(value ?? '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').replace(/\0/gu, '')
@@ -62,20 +64,31 @@ function resultText(content, result) {
     : block && typeof block === 'object' && 'type' in block && block.type === 'text' && 'text' in block ? String(block.text) : '').join('\n')
 }
 
-export function toolFailureDiagnostic(name, input, content, result, secrets = []) {
-  const parameters = (inputFields[name] ?? []).flatMap(key => {
+export function toolActivityParameters(name, input, secrets = []) {
+  return (inputFields[name] ?? []).flatMap(key => {
     const value = input && typeof input === 'object' ? input[key] : undefined
-    if (!['string', 'number'].includes(typeof value)) return []
-    return [`${inputLabels[key] ?? key}：${sanitize(value, secrets, 900)}`]
+    const text = value && typeof value === 'object' ? JSON.stringify(value) : value
+    if (!['string', 'number'].includes(typeof text)) return []
+    return [`${inputLabels[key] ?? key}：${sanitize(text, secrets, 900)}`]
   }).join('\n')
-  const error = sanitize(resultText(content, result), secrets)
-  return [parameters && `参数\n${parameters}`, error && `错误摘要\n${error}`].filter(Boolean).join('\n') || '工具返回失败，但未提供错误正文。'
+}
+
+export function toolActivityDetail(name, input, content, result, secrets = [], failed = false) {
+  const parameters = toolActivityParameters(name, input, secrets)
+  const output = sanitize(resultText(content, result), secrets)
+  return [parameters && `参数\n${parameters}`, output && `${failed ? '错误' : '结果'}摘要\n${output}`].filter(Boolean).join('\n') ||
+    (failed ? '工具返回失败，但未提供错误正文。' : '工具已完成，无文本输出。')
+}
+
+export function toolFailureDiagnostic(name, input, content, result, secrets = []) {
+  return toolActivityDetail(name, input, content, result, secrets, true)
 }
 
 export function summarizeActivities(items) {
   const counts = Object.fromEntries([...kinds].map(kind => [kind, 0]))
   const active = []
   const failures = []
+  const details = []
   let total = 0
   let errors = 0
   for (const item of Array.isArray(items) ? items.slice(-40) : []) {
@@ -83,8 +96,9 @@ export function summarizeActivities(items) {
     if (!activity) continue
     total++
     counts[activity.kind]++
+    details.push(activity)
     if (activity.status === 'running') active.push(activity)
     if (activity.status === 'error') { errors++; failures.push(activity) }
   }
-  return { total, counts, active, failures, errors }
+  return { total, counts, active, failures, details, errors }
 }

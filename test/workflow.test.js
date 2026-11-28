@@ -870,7 +870,8 @@ test('dispatch exposes bounded model text before the result without changing rev
     assert.equal(app.store().nextNotice(), undefined)
     recordOutput('正在读取订单模块。')
     recordActivity({ id: 'tool-1', kind: 'read', status: 'running', input: 'private path', output: 'private output' })
-    recordActivity({ id: 'tool-1', kind: 'read', status: 'completed' })
+    recordActivity({ id: 'tool-1', kind: 'read', status: 'completed', name: 'Read',
+      diagnostic: '参数\n文件：src/orders.js\n结果摘要\n已读取文件', output: 'private output' })
     recordActivity({ id: 'tool-2', kind: 'command', status: 'error', name: 'Bash',
       diagnostic: '命令：node scripts/verify.js\n错误摘要\nexit code 1', input: 'private input', output: 'private output' })
     const deadline = Date.now() + 2000
@@ -881,7 +882,7 @@ test('dispatch exposes bounded model text before the result without changing rev
     assert.deepEqual(detail.modelOutputs[task.attempt.id], { text: '正在读取订单模块。', truncated: false })
     assert.equal(detail.history.at(-1).attempt.status, 'running')
     assert.deepEqual(detail.timeline.at(-1).attempt.activities.map(({ id, kind, status, name, diagnostic }) => ({ id, kind, status, name, diagnostic })), [
-      { id: 'tool-1', kind: 'read', status: 'completed', name: undefined, diagnostic: undefined },
+      { id: 'tool-1', kind: 'read', status: 'completed', name: 'Read', diagnostic: '参数\n文件：src/orders.js\n结果摘要\n已读取文件' },
       { id: 'tool-2', kind: 'command', status: 'error', name: 'Bash', diagnostic: '命令：node scripts/verify.js\n错误摘要\nexit code 1' },
     ])
     assert.equal(JSON.stringify(detail.timeline).includes('private input'), false)

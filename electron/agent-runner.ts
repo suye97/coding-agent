@@ -4,7 +4,7 @@ import { isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { toolActivityKind, toolFailureDiagnostic } from '../src/agent-activity.js'
+import { toolActivityKind, toolActivityDetail, toolActivityParameters } from '../src/agent-activity.js'
 import { commandToolObservations, observationsFromFile } from '../src/agent-evidence.js'
 
 interface StartMessage {
@@ -90,10 +90,18 @@ async function run(message: StartMessage) {
     const startActivity = (toolId: unknown, name: unknown, toolInput?: unknown) => {
       if (typeof toolId !== 'string' || typeof name !== 'string') return
       const existing = activities.get(toolId)
-      if (existing) { existing.input = toolInput ?? existing.input; return }
+      if (existing) {
+        existing.input = toolInput ?? existing.input
+        if (toolInput && typeof toolInput === 'object' && Object.keys(toolInput).length) {
+          send({ type: 'activity', id, item: { id: toolId, kind: existing.kind, status: existing.status, name,
+            diagnostic: toolActivityParameters(name, existing.input, redactions) } })
+        }
+        return
+      }
       const item = { kind: toolActivityKind(name), status: 'running', name, input: toolInput }
       activities.set(toolId, item)
-      send({ type: 'activity', id, item: { id: toolId, kind: item.kind, status: item.status, name } })
+      send({ type: 'activity', id, item: { id: toolId, kind: item.kind, status: item.status, name,
+        diagnostic: toolActivityParameters(name, toolInput, redactions) } })
     }
     const finishActivity = (toolId: string, failed: boolean, content?: unknown, result?: unknown) => {
       const current = activities.get(toolId)
@@ -101,7 +109,7 @@ async function run(message: StartMessage) {
       current.status = failed ? 'error' : 'completed'
       send({ type: 'activity', id, item: {
         id: toolId, kind: current.kind, status: current.status, name: current.name,
-        ...(failed && { diagnostic: toolFailureDiagnostic(current.name, current.input, content, result, redactions) }),
+        diagnostic: toolActivityDetail(current.name, current.input, content, result, redactions, failed),
       } })
     }
     for await (const event of stream as AsyncIterable<SDKMessage>) {

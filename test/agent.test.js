@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgent } from '../src/agent.js'
-import { normalizeActivity, summarizeActivities, toolActivityKind, toolFailureDiagnostic } from '../src/agent-activity.js'
+import { normalizeActivity, summarizeActivities, toolActivityKind, toolActivityDetail, toolActivityParameters, toolFailureDiagnostic } from '../src/agent-activity.js'
 
 const model = { name: 'test-model', baseUrl: 'https://example.invalid', apiKey: 'unit-test-only' }
 const validation = { kind: 'operation', operation: '筛选订单', steps: ['点击筛选'], expected: '只显示已完成订单' }
@@ -82,6 +82,20 @@ test('agent summarizes tool activity without repeating completed rows or leaking
   assert.deepEqual(summary.active, [active])
   assert.equal(summary.errors, 1)
   assert.equal(JSON.stringify(summary).includes('private'), false)
+})
+
+test('successful tool activities retain sanitized parameters and result summaries', () => {
+  const diagnostic = toolActivityDetail('Bash', { command: 'node scripts/verify.js', output: 'private raw input' }, '',
+    { stdout: 'verification passed', stderr: '' })
+  assert.match(diagnostic, /命令：node scripts\/verify\.js/)
+  assert.match(diagnostic, /结果摘要\nverification passed/)
+  assert.doesNotMatch(diagnostic, /private raw input/)
+  const activity = normalizeActivity({ id: 'tool-ok', kind: 'command', status: 'completed', name: 'Bash', diagnostic })
+  assert.equal(activity.diagnostic, diagnostic)
+  assert.deepEqual(summarizeActivities([activity]).details, [activity])
+  assert.deepEqual(summarizeActivities([activity]).failures, [])
+  const plan = toolActivityParameters('TodoWrite', { todos: [{ content: '实现订单筛选', status: 'in_progress' }] })
+  assert.match(plan, /公开计划：.*实现订单筛选/)
 })
 
 test('tool failures retain actionable commands and paths while redacting credentials', () => {

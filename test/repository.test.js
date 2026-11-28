@@ -5,9 +5,24 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
-import { createRepository } from '../src/repository.js'
+import { createRepository, formatRemoteFailure } from '../src/repository.js'
 
 const exec = promisify(execFile)
+
+test('remote failures retain classified Git diagnostics without URL credentials', () => {
+  const authentication = formatRemoteFailure('origin', ['ls-remote', '--', 'https://example.invalid/repo'], {
+    stderr: "fatal: Authentication failed for 'https://git-user:unit-test-only@example.invalid/repo'",
+  })
+  assert.match(authentication.message, /访问远端 origin 失败：Git 认证失败/)
+  assert.match(authentication.message, /Git：fatal: Authentication failed/)
+  assert.doesNotMatch(authentication.message, /unit-test-only|git-user/)
+
+  const rejected = formatRemoteFailure('origin', ['push', '--', 'https://example.invalid/repo'], {
+    stderr: 'remote: protected branch hook declined\n ! [remote rejected] master (pre-receive hook declined)',
+  })
+  assert.match(rejected.message, /更新远端 origin 失败：远端拒绝写入/)
+  assert.match(rejected.message, /protected branch hook declined/)
+})
 
 test('local git worktree retains its baseline, verifies commits and records failed checks', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'feishu-repository-'))

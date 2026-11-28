@@ -14,7 +14,10 @@ export interface AgentActivitySummary {
   counts: Record<AgentActivityKind, number>
   active: AgentActivity[]
   failures: AgentActivity[]
+  details: AgentActivity[]
   errors: number
 }
 export function summarizeActivities(items: unknown): AgentActivitySummary
+export function toolActivityParameters(name: unknown, input: unknown, secrets?: string[]): string
+export function toolActivityDetail(name: unknown, input: unknown, content: unknown, result: unknown, secrets?: string[], failed?: boolean): string
 export function toolFailureDiagnostic(name: unknown, input: unknown, content: unknown, result: unknown, secrets?: string[]): string
