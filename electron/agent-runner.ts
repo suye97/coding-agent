@@ -4,7 +4,7 @@ import { isAbsolute, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { toolActivityKind } from '../src/agent-activity.js'
+import { toolActivityKind, toolFailureDiagnostic } from '../src/agent-activity.js'
 import { commandToolObservations, observationsFromFile } from '../src/agent-evidence.js'
 
 interface StartMessage {
@@ -83,19 +83,26 @@ async function run(message: StartMessage) {
     let finalText = ''
     let sessionId = input.resumeSessionId
     let initialized = false
-    const activities = new Map<string, { kind: string; status: string }>()
+    const activities = new Map<string, { kind: string; status: string; name?: string; input?: unknown }>()
     const backgroundOutputs = new Set<string>()
-    const startActivity = (toolId: unknown, name: unknown) => {
-      if (typeof toolId !== 'string' || activities.has(toolId)) return
-      const item = { kind: toolActivityKind(name), status: 'running' }
+    const redactions = [input.apiKey, ...Object.entries(process.env).flatMap(([name, value]) =>
+      /(?:key|token|secret|pass|credential|auth)/iu.test(name) && value ? [value] : [])]
+    const startActivity = (toolId: unknown, name: unknown, toolInput?: unknown) => {
+      if (typeof toolId !== 'string' || typeof name !== 'string') return
+      const existing = activities.get(toolId)
+      if (existing) { existing.input = toolInput ?? existing.input; return }
+      const item = { kind: toolActivityKind(name), status: 'running', name, input: toolInput }
       activities.set(toolId, item)
-      send({ type: 'activity', id, item: { id: toolId, ...item } })
+      send({ type: 'activity', id, item: { id: toolId, kind: item.kind, status: item.status, name } })
     }
-    const finishActivity = (toolId: string, failed: boolean) => {
+    const finishActivity = (toolId: string, failed: boolean, content?: unknown, result?: unknown) => {
       const current = activities.get(toolId)
       if (!current || current.status !== 'running') return
       current.status = failed ? 'error' : 'completed'
-      send({ type: 'activity', id, item: { id: toolId, ...current } })
+      send({ type: 'activity', id, item: {
+        id: toolId, kind: current.kind, status: current.status, name: current.name,
+        ...(failed && { diagnostic: toolFailureDiagnostic(current.name, current.input, content, result, redactions) }),
+      } })
     }
     for await (const event of stream as AsyncIterable<SDKMessage>) {
       if (abort.signal.aborted) break
@@ -106,11 +113,11 @@ async function run(message: StartMessage) {
       }
       if ('session_id' in event && event.session_id) sessionId = event.session_id
       if (event.type === 'stream_event' && !event.parent_tool_use_id && event.event.type === 'content_block_start' && event.event.content_block.type === 'tool_use') {
-        startActivity(event.event.content_block.id, event.event.content_block.name)
+        startActivity(event.event.content_block.id, event.event.content_block.name, event.event.content_block.input)
       }
       if (event.type === 'assistant' && !event.parent_tool_use_id && Array.isArray(event.message.content)) {
         for (const block of event.message.content) {
-          if (block.type === 'tool_use') startActivity(block.id, block.name)
+          if (block.type === 'tool_use') startActivity(block.id, block.name, block.input)
         }
       }
       if (event.type === 'stream_event' && !event.parent_tool_use_id && event.event.type === 'content_block_delta' && event.event.delta.type === 'text_delta') {
@@ -121,7 +128,7 @@ async function run(message: StartMessage) {
         if (!Array.isArray(content)) continue
         for (const block of content) {
           if (block.type !== 'tool_result') continue
-          finishActivity(block.tool_use_id, Boolean(block.is_error))
+          finishActivity(block.tool_use_id, Boolean(block.is_error), block.content, event.tool_use_result)
           if (block.is_error) continue
           const items = await commandToolObservations({
             id: block.tool_use_id,

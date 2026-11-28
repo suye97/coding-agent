@@ -1,7 +1,7 @@
 const kinds = new Set(['read', 'search', 'edit', 'command', 'plan', 'other'])
 const statuses = new Set(['running', 'completed', 'error'])
 
-// Fixed categories only: tool names, arguments, paths and output never cross into the UI.
+// Fixed categories only: arbitrary tool payloads never cross into the UI.
 export function toolActivityKind(name) {
   return {
     Read: 'read',
@@ -15,12 +15,67 @@ export function toolActivityKind(name) {
 export function normalizeActivity(item) {
   if (typeof item?.id !== 'string' || !item.id || item.id.length > 128 ||
       !kinds.has(item.kind) || !statuses.has(item.status)) return undefined
-  return { id: item.id, kind: item.kind, status: item.status }
+  return {
+    id: item.id, kind: item.kind, status: item.status,
+    ...(typeof item.name === 'string' && /^[\w.:+-]{1,80}$/u.test(item.name) && { name: item.name }),
+    ...(item.status === 'error' && typeof item.diagnostic === 'string' && item.diagnostic.trim() && {
+      diagnostic: item.diagnostic.slice(0, 3000),
+    }),
+  }
+}
+
+const inputFields = {
+  Bash: ['command'], Read: ['file_path', 'offset', 'limit'],
+  Edit: ['file_path'], Write: ['file_path'], NotebookEdit: ['notebook_path'],
+  Grep: ['pattern', 'path', 'glob'], Glob: ['pattern', 'path'],
+}
+const inputLabels = { command: '命令', file_path: '文件', notebook_path: '文件', path: '目录', pattern: '匹配', glob: '范围', offset: '起始行', limit: '行数' }
+
+function sanitize(value, secrets = [], limit = 1800) {
+  let text = String(value ?? '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').replace(/\0/gu, '')
+  for (const secret of secrets) {
+    if (typeof secret === 'string' && secret.length >= 4) text = text.split(secret).join('[已隐藏]')
+  }
+  return text
+    .replace(/\/\/[^\s/:@]+:[^\s/@]+@/gu, '//[已隐藏]@')
+    .replace(/\b(Bearer|Basic)\s+[a-z0-9._~+/=-]+/giu, '$1 [已隐藏]')
+    .replace(/([?&](?:api[_-]?key|access_token|token|secret|password)=)[^&\s]+/giu, '$1[已隐藏]')
+    .replace(/((?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|passwd|credential)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/giu, '$1[已隐藏]')
+    .replace(/((?:--?(?:api[-_]?key|token|secret|password|credential)(?:\s+|=))(?:"[^"]*"|'[^']*'|[^\s]+))/giu, match => {
+      const separator = match.includes('=') ? '=' : ' '
+      return `${match.split(separator)[0]}${separator}[已隐藏]`
+    })
+    .replace(/\beyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\b/giu, '[已隐藏]')
+    .trim().slice(-limit)
+}
+
+function resultText(content, result) {
+  if (typeof result === 'string') return result
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    const text = ['stderr', 'stdout', 'message'].filter(key => typeof result[key] === 'string' && result[key])
+      .map(key => result[key]).join('\n')
+    if (text) return text
+  }
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content.map(block => typeof block === 'string' ? block
+    : block && typeof block === 'object' && 'type' in block && block.type === 'text' && 'text' in block ? String(block.text) : '').join('\n')
+}
+
+export function toolFailureDiagnostic(name, input, content, result, secrets = []) {
+  const parameters = (inputFields[name] ?? []).flatMap(key => {
+    const value = input && typeof input === 'object' ? input[key] : undefined
+    if (!['string', 'number'].includes(typeof value)) return []
+    return [`${inputLabels[key] ?? key}：${sanitize(value, secrets, 900)}`]
+  }).join('\n')
+  const error = sanitize(resultText(content, result), secrets)
+  return [parameters && `参数\n${parameters}`, error && `错误摘要\n${error}`].filter(Boolean).join('\n') || '工具返回失败，但未提供错误正文。'
 }
 
 export function summarizeActivities(items) {
   const counts = Object.fromEntries([...kinds].map(kind => [kind, 0]))
   const active = []
+  const failures = []
   let total = 0
   let errors = 0
   for (const item of Array.isArray(items) ? items.slice(-40) : []) {
@@ -29,7 +84,7 @@ export function summarizeActivities(items) {
     total++
     counts[activity.kind]++
     if (activity.status === 'running') active.push(activity)
-    if (activity.status === 'error') errors++
+    if (activity.status === 'error') { errors++; failures.push(activity) }
   }
-  return { total, counts, active, errors }
+  return { total, counts, active, failures, errors }
 }

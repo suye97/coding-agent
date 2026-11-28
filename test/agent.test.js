@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgent } from '../src/agent.js'
-import { normalizeActivity, summarizeActivities, toolActivityKind } from '../src/agent-activity.js'
+import { normalizeActivity, summarizeActivities, toolActivityKind, toolFailureDiagnostic } from '../src/agent-activity.js'
 
 const model = { name: 'test-model', baseUrl: 'https://example.invalid', apiKey: 'unit-test-only' }
 const validation = { kind: 'operation', operation: '筛选订单', steps: ['点击筛选'], expected: '只显示已完成订单' }
@@ -84,6 +84,25 @@ test('agent summarizes tool activity without repeating completed rows or leaking
   assert.equal(JSON.stringify(summary).includes('private'), false)
 })
 
+test('tool failures retain actionable commands and paths while redacting credentials', () => {
+  const secret = 'unit-test-only'
+  const diagnostic = toolFailureDiagnostic('Bash', {
+    command: `node scripts/verify.js --api-key ${secret}`,
+    private: 'must not be forwarded',
+  }, '', { stderr: `Authorization: Bearer abcdef123456\nAPI_KEY=${secret}\nverification failed` }, [secret])
+  assert.match(diagnostic, /命令：node scripts\/verify\.js/)
+  assert.match(diagnostic, /verification failed/)
+  assert.match(diagnostic, /\[已隐藏\]/)
+  assert.doesNotMatch(diagnostic, new RegExp(secret))
+  assert.doesNotMatch(diagnostic, /abcdef123456|must not be forwarded/)
+  const activity = normalizeActivity({ id: 'tool-failed', kind: 'command', status: 'error', name: 'Bash', diagnostic,
+    input: { command: 'private raw input' }, output: 'private raw output' })
+  assert.deepEqual(activity, { id: 'tool-failed', kind: 'command', status: 'error', name: 'Bash', diagnostic })
+  const summary = summarizeActivities([activity])
+  assert.deepEqual(summary.failures, [activity])
+  assert.equal(JSON.stringify(summary).includes('private raw'), false)
+})
+
 test('agent rejects invalid structured plans and undeclared alternative results', async () => {
   const invalidPlan = fixture({ ...plan, validation: undefined })
   await assert.rejects(invalidPlan.runner.design(input()), /缺少有效的操作验证计划/)
@@ -111,6 +130,15 @@ test('agent requires model configuration before starting a paid run', async () =
   const runner = createAgent({ execute: async () => { called = true }, getModel: async () => ({ ...model, apiKey: '' }) })
   await assert.rejects(runner.design(input()), /先.*模型/)
   assert.equal(called, false)
+})
+
+test('development observations on fixed-check plans do not become operation evidence', async () => {
+  const checksTask = structuredClone(task)
+  checksTask.plan = { ...plan, validation: { kind: 'checks', reason: '运行固定回归检查' } }
+  const { runner } = fixture({ status: 'implemented', summary: '已完成开发', observed: '固定检查通过' })
+  const result = await runner.develop(input({ task: checksTask }))
+  assert.equal(result.observed, '固定检查通过')
+  assert.equal(result.operationEvidence, undefined)
 })
 
 test('verification returns only observation assertions emitted by real tool results', async () => {

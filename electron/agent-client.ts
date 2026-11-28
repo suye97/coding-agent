@@ -12,7 +12,7 @@ interface RunInput {
   model: { name: string; baseUrl: string; apiKey: string }
   signal: AbortSignal
   onOutput(text: string): void
-  onActivity?(item: { id: string; kind: 'read' | 'search' | 'edit' | 'command' | 'plan' | 'other'; status: 'running' | 'completed' | 'error' }): void
+  onActivity?(item: { id: string; kind: 'read' | 'search' | 'edit' | 'command' | 'plan' | 'other'; status: 'running' | 'completed' | 'error'; name?: string; diagnostic?: string }): void
   onAssertion(item: { id: string; line: string; sha256: string }): boolean | void
   onSession(sessionId: string): void
 }
@@ -37,7 +37,7 @@ export class AgentProcess {
       const pending = message.id ? this.pending.get(message.id) : undefined
       if (!pending || !message.id) return
       if (message.type === 'output' && typeof message.text === 'string') pending.input.onOutput(message.text)
-      if (message.type === 'activity') pending.input.onActivity?.(message.item as { id: string; kind: 'read' | 'search' | 'edit' | 'command' | 'plan' | 'other'; status: 'running' | 'completed' | 'error' })
+      if (message.type === 'activity') pending.input.onActivity?.(message.item as { id: string; kind: 'read' | 'search' | 'edit' | 'command' | 'plan' | 'other'; status: 'running' | 'completed' | 'error'; name?: string; diagnostic?: string })
       if (message.type === 'assertion') pending.input.onAssertion(message.item as { id: string; line: string; sha256: string })
       if (message.type === 'session' && typeof message.sessionId === 'string') pending.input.onSession(message.sessionId)
       if (message.type === 'result') {

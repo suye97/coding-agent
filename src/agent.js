@@ -191,7 +191,7 @@ export function createAgent({ execute, getModel, loadAttachment, gitCommit, prep
       ].join('\n'))
       const development = readDevelopment(output)
       const commit = await readCommit(task.work.worktree, input.signal)
-      return { ...development, ...(field(development.observed, 500) && { operationEvidence: { observed: development.observed.trim(), assertions, commit } }) }
+      return { ...development, ...(validation?.kind === 'operation' && field(development.observed, 500) && { operationEvidence: { observed: development.observed.trim(), assertions, commit } }) }
     },
   }
 }

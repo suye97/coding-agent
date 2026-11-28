@@ -806,7 +806,7 @@ export function createWorkflow({ store, projects, userId, runner, repository, on
           throw new Error('开发委派返回了无效结果。')
         }
         task.attempt.development = { status: development.status, summary: development.summary, ...(development.alternative && { alternative: development.alternative }) }
-        if (development.operationEvidence) {
+        if (development.operationEvidence && validation.kind === 'operation') {
           task.operationEvidence = bindEvidenceIdentity({
             ...development.operationEvidence,
             operation: validation.operation,

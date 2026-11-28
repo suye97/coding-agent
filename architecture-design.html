@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>需求交付台 架构图解</title>
+<style>
+:root{--paper:#f1f0f7;--sheet:#fff;--ink:#1c1930;--muted:#515067;--edge:#d8d4e6;--violet:#53349b;--map:#211a3a;--map-panel:#2c234b;--map-cell:#382c5e;--map-ink:#fbf8ff;--map-muted:#e0d6f5;--wire:#c9b2fa;--line:#82769e;--mono:ui-monospace,Consolas,monospace;--sans:"Microsoft YaHei UI","PingFang SC","Noto Sans CJK SC",system-ui,sans-serif}
+*{box-sizing:border-box}html{scroll-padding-top:1.25rem}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.72 var(--sans)}a{color:var(--violet);text-underline-offset:.22em}a:focus-visible,summary:focus-visible{outline:3px solid var(--violet);outline-offset:4px;border-radius:3px}h1,h2,h3,p,figure,ol,ul{margin:0}h1,h2,h3{line-height:1.24;text-wrap:balance}h2{font-size:clamp(1.65rem,3vw,2.35rem);letter-spacing:-.035em}h3{font-size:1.12rem}p{max-width:68ch}strong{font-weight:750}code{font-family:var(--mono);font-size:.88em;overflow-wrap:anywhere}p code,li code,dd code,td code{background:#eeeaf9;padding:.08em .28em;border-radius:3px;color:#3e286c}li{padding-inline-start:.15rem}li+li{margin-top:.38rem}ul,ol{padding-inline-start:1.45rem}svg{display:block;max-width:100%}.skip{position:absolute;top:.5rem;left:.5rem;transform:translateY(-150%);background:var(--sheet);padding:.5rem 1rem;z-index:5}.skip:focus{transform:none}
+.wrap{width:min(1120px,calc(100% - 64px));margin-inline:auto}.masthead{border-bottom:1px solid var(--edge)}.masthead .wrap{min-height:68px;display:flex;align-items:center;justify-content:space-between;gap:1.4rem}.brand{display:flex;align-items:center;gap:.65rem;font-weight:750;white-space:nowrap}.brand svg{width:25px;height:25px;color:var(--violet)}.masthead nav{display:flex;flex-wrap:wrap;gap:.35rem 1.4rem;font-size:.9rem}.masthead nav a{text-decoration:none;color:var(--ink)}.masthead nav a:hover{text-decoration:underline}.intro{padding:48px 0 28px;display:grid;grid-template-columns:1fr auto;align-items:end;gap:1rem 3rem}.intro h1{font-size:clamp(2.2rem,5.65vw,4.5rem);font-weight:800;letter-spacing:-.065em;margin-bottom:.7rem}.intro p{font-size:clamp(1rem,2vw,1.17rem);color:var(--muted);max-width:55ch}.edition{display:grid;grid-template-columns:auto auto;align-items:baseline;gap:.18rem .95rem;margin:0;padding-left:1.1rem;border-left:2px solid var(--violet);font-size:.86rem}.edition dt{color:var(--muted)}.edition dd{margin:0;font-weight:710;white-space:nowrap}
+.blueprint{background:var(--map);color:var(--map-ink);border-radius:6px 28px 6px 6px;padding:19px 22px 0;box-shadow:0 9px 26px #211a3a11}.figure-head{display:flex;align-items:baseline;justify-content:space-between;gap:.6rem 1.2rem;flex-wrap:wrap;padding:0 5px}.figure-head h2{font-size:1.14rem;letter-spacing:0}.figure-head span{color:var(--map-muted);font-size:.83rem}.blueprint svg{width:100%;height:auto;margin-top:4px}.blueprint .zone{fill:var(--map-panel);stroke:var(--line);stroke-dasharray:6 5}.blueprint .zone-title{font-size:18px;font-weight:750;fill:var(--map-ink)}.blueprint .zone-note{font-size:12px;fill:var(--map-muted)}.blueprint .node{fill:var(--map-cell);stroke:var(--line);stroke-width:1.1}.blueprint .major .node{stroke:var(--wire)}.blueprint a:hover .node,.blueprint a:focus-visible .node{fill:#4b3978;stroke:var(--map-ink);stroke-width:2.5}.blueprint a:focus-visible{outline:none}.blueprint text{pointer-events:none;fill:var(--map-ink);font:700 17px var(--sans)}.blueprint .sub{fill:var(--map-muted);font-size:12px;font-weight:450}.blueprint .edge-label{fill:var(--map-muted);font-size:11.5px;font-weight:500;paint-order:stroke;stroke:var(--map);stroke-width:5px;stroke-linejoin:round}.blueprint .wire{stroke:var(--wire);fill:none;stroke-width:1.6;marker-end:url(#arrow)}.blueprint .both{marker-start:url(#arrow)}.blueprint figcaption{color:var(--map-muted);border-top:1px solid var(--line);padding:11px 5px 14px;font-size:.85rem}.legend{display:inline-flex;gap:.75rem;flex-wrap:wrap;margin-right:.7rem}.legend-item{display:inline-flex;align-items:center;gap:.34rem}.key{display:inline-grid;place-items:center;color:var(--wire);font-weight:800;width:1.35rem}.key.dash{height:.68rem;border:1px dashed var(--wire)}.map-mobile{display:none}
+.article{padding:50px 0 64px}.chapter+.chapter{margin-top:58px}.chapter-head{display:grid;grid-template-columns:minmax(155px,.66fr) minmax(0,2fr);gap:1rem 2rem;align-items:end;border-bottom:2px solid var(--ink);padding-bottom:14px;margin-bottom:20px}.chapter-head p{color:var(--muted);font-size:.96rem}.principles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--edge);border:1px solid var(--edge);border-radius:5px;overflow:hidden}.principles>div{background:var(--sheet);padding:16px 18px}.principles h3{margin-bottom:.42rem}.principles p,.module p,.ledger p,.ladder p{font-size:.92rem;color:var(--muted)}.module-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 26px}.module{border-bottom:1px solid var(--edge);padding:16px 0;scroll-margin-top:1.15rem}.module:nth-child(-n+2){padding-top:1px}.module h3{margin-bottom:.45rem}.module p+p{margin-top:.55rem}.ref{display:inline-block;font-size:.79rem;color:var(--violet);margin-top:.55rem;font-weight:650}.flow{list-style:none;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:17px;counter-reset:flow}.flow>li{counter-increment:flow;position:relative;border-top:3px solid var(--violet);padding:13px 12px 14px;margin:0;background:var(--sheet);min-width:0}.flow>li:before{content:counter(flow,decimal-leading-zero);display:block;font:700 .82rem var(--mono);color:var(--violet);margin-bottom:.45rem}.flow>li:not(:last-child):after{content:"→";position:absolute;left:calc(100% + 1px);top:13px;color:var(--violet);font-size:.94rem;font-weight:750;line-height:1.35}.flow h3{font-size:1rem;margin-bottom:.45rem}.flow p{font-size:.87rem;color:var(--muted);line-height:1.58}.flow p+p{margin-top:.45rem}.flow .state{font:.73rem/1.5 var(--mono);color:#452f79;overflow-wrap:anywhere}.ledger{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--edge);border:1px solid var(--edge);margin-top:14px}.ledger>div{background:#f9f7ff;padding:14px 16px}.ledger h3{margin-bottom:.4rem;font-size:1rem}.notice{border-left:3px solid var(--violet);background:#eae4f8;padding:.8rem 1.05rem;margin-top:16px;font-size:.92rem}.notice p{max-width:none}.subhead{margin:26px 0 12px;font-size:1.18rem}.table-wrap{border:1px solid var(--edge);background:var(--sheet);border-radius:5px;overflow:hidden}table{width:100%;border-collapse:collapse;text-align:left;font-size:.9rem}caption{text-align:left;padding:.75rem 1rem;font-weight:700}th,td{vertical-align:top;padding:.64rem .86rem;border-bottom:1px solid var(--edge)}thead th{background:#eae5f5;color:var(--ink)}tbody tr:last-child>*{border-bottom:0}tbody th{font-weight:730}td{color:var(--muted)}.stage-table th:first-child{width:25%}.stage-table td:last-child{width:34%}.index-table th:first-child{width:38%}.index-table td code{color:#3e286c;background:none;padding:0}.index-table td code+code{display:block;margin-top:.2rem}
+.ladder{list-style:none;padding:0;counter-reset:evidence;border-left:2px solid var(--violet);margin-left:12px}.ladder>li{counter-increment:evidence;position:relative;margin:0;padding:0 0 16px 24px}.ladder>li:last-child{padding-bottom:0}.ladder>li:before{content:counter(evidence);position:absolute;left:-13px;top:-2px;background:var(--violet);color:white;width:24px;height:24px;display:grid;place-items:center;border-radius:50%;font:700 .77rem var(--mono)}.ladder h3{margin-bottom:.28rem}.split{display:grid;grid-template-columns:1fr 1fr;align-items:start;gap:30px}.split p+p{margin-top:.7rem}.split h3{margin-bottom:.5rem}.split ul{font-size:.92rem}.budget{margin-top:12px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--edge);border:1px solid var(--edge)}.budget div{background:var(--sheet);padding:.45rem .65rem;font-size:.8rem;color:var(--muted)}.budget strong{display:block;color:var(--ink);font-size:1rem;font-variant-numeric:tabular-nums}.expand{border-bottom:1px solid var(--edge);padding:.75rem 0}.expand summary{width:fit-content;cursor:pointer;font-weight:730;color:var(--violet)}.expand>p,.expand>ul{margin-top:.5rem;font-size:.91rem}.footer{border-top:1px solid var(--edge);font-size:.83rem;color:var(--muted);padding:17px 0 29px}.footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:.6rem}
+@media(max-width:900px){.wrap{width:calc(100% - 40px)}.intro{padding-top:34px}.chapter-head{grid-template-columns:1fr;gap:.5rem}.flow{gap:12px}.flow>li{padding-inline:9px}.flow>li:not(:last-child):after{left:calc(100% + 0px);font-size:.76rem}.blueprint{padding-inline:13px}}
+@media(max-width:720px){.wrap{width:calc(100% - 32px)}.masthead .wrap{flex-direction:column;align-items:flex-start;justify-content:center;gap:.35rem;padding-block:.65rem}.masthead nav{gap:.25rem 1rem}.intro{grid-template-columns:1fr;padding:25px 0 19px;gap:.85rem}.intro h1{margin-bottom:.45rem}.edition{width:fit-content;gap:.1rem .65rem}.blueprint{padding:14px 12px 0;border-radius:5px 19px 5px 5px}.blueprint>svg,.figure-head span,.blueprint .legend{display:none}.map-mobile{display:grid;gap:7px;margin:12px 0;padding:0;list-style:none}.map-mobile li{background:var(--map-panel);padding:.52rem .64rem;border:1px solid var(--line);margin:0;color:var(--map-muted);font-size:.83rem}.map-mobile a{color:var(--map-ink);font-weight:730}.map-mobile a:focus-visible{outline-color:var(--wire)}.blueprint figcaption{font-size:.8rem}.article{padding:38px 0 46px}.chapter+.chapter{margin-top:42px}.principles,.module-list,.ledger,.split{grid-template-columns:1fr}.principles>div{padding:12px 14px}.module:nth-child(2){padding-top:16px}.flow{grid-template-columns:1fr;gap:9px;border-left:2px solid var(--violet);margin-left:6px;padding-left:11px}.flow>li{border-top:0;padding:10px 12px 10px 43px}.flow>li:before{position:absolute;left:12px;top:13px}.flow>li:not(:last-child):after{content:none}.split{gap:18px}th,td{padding:.52rem .53rem}.stage-table th:first-child,.index-table th:first-child{width:24%}.stage-table td:last-child{width:31%}.table-wrap table{font-size:.8rem}.index-table th:first-child{width:49%}}
+@media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}body{background:white;font-size:10pt}.wrap{width:100%}.masthead,.skip,.footer a{display:none}.intro{padding:0 0 16px}.intro h1{font-size:30pt}.blueprint{box-shadow:none;break-inside:avoid}.blueprint>svg{display:block!important}.map-mobile{display:none!important}.article{padding:22px 0}.chapter+.chapter{margin-top:30px}.chapter-head,h3{break-after:avoid}.module,.ladder>li,tr,.notice{break-inside:avoid}.expand:not([open])>:not(summary){display:block}.table-wrap{overflow:visible}}
+[hidden]{display:none!important}
+[data-report-panel]{scroll-margin-top:64px}
+.report-tabs{display:flex;gap:.35rem;margin-bottom:16px;border-bottom:1px solid var(--edge)}.report-tabs a{display:flex;align-items:center;justify-content:center;min-height:44px;padding:.55rem 1rem;border:1px solid transparent;border-bottom:3px solid transparent;border-radius:6px 6px 0 0;color:var(--muted);text-decoration:none;font-size:.92rem;font-weight:700}.report-tabs a[aria-selected="true"]{background:var(--sheet);border-color:var(--edge);border-bottom-color:var(--violet);color:var(--violet)}.report-tabs a:hover{color:var(--violet);background:var(--sheet)}.report-tabs a:focus-visible{outline-offset:-3px}[data-report-panel]:focus-visible{outline:2px solid var(--violet);outline-offset:5px}
+.deep-hero{background:var(--map);color:var(--map-ink);padding:clamp(20px,3.8vw,43px);border-radius:6px 28px 6px 6px}.deep-hero h2{font-size:clamp(1.65rem,3.45vw,2.65rem);margin-bottom:.55rem}.deep-hero p{color:var(--map-muted)}.deep-links{display:flex;flex-wrap:wrap;gap:.3rem 1.2rem;margin-top:1rem}.deep-links a{color:var(--map-ink);font-size:.9rem}.deep-links a:focus-visible{outline-color:var(--wire)}.deep-body{padding-top:34px}.deep-body .chapter-head{grid-template-columns:1fr;gap:.45rem}.reading-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px 25px}.reading-grid h3{margin-bottom:.35rem}.reading-grid p,.case-list p{font-size:.92rem;color:var(--muted)}.gate-table tbody th{width:24%}.gate-table td:last-child{width:29%}.gate-note{margin:.72rem 0 1.1rem;font-size:.9rem;color:var(--muted)}.case-list{list-style:none;padding:0;border-top:1px solid var(--edge)}.case-list li{margin:0;padding:12px 0;border-bottom:1px solid var(--edge);display:grid;grid-template-columns:minmax(140px,.7fr) minmax(0,2fr);gap:15px}.case-list h3{font-size:1rem}.case-list p{max-width:none}
+@media(max-width:720px){.report-tabs a{padding:.52rem .64rem;font-size:.85rem}.reading-grid,.case-list li{grid-template-columns:1fr}.case-list li{gap:.4rem}.gate-table th,.gate-table td{overflow-wrap:anywhere}.deep-body{padding-top:27px}}
+@media print{.report-tabs,.deep-links{display:none!important}[data-report-panel][hidden]{display:block!important}#workflow-panel{break-before:page}.case-list li{break-inside:avoid}}
+.walkthrough{padding:1.2rem 0 1.4rem;border-bottom:1px solid var(--edge);scroll-margin-top:.5rem}.walkthrough:first-of-type{padding-top:0}.walkthrough h3{margin-bottom:.72rem}.code-pair{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(0,1fr);gap:.8rem 1.2rem;align-items:start}.source-stack{display:grid;gap:.6rem;min-width:0}.source-example{min-width:0;overflow:hidden;border:1px solid var(--line);border-radius:6px;background:var(--map);color:var(--map-ink)}.source-example figcaption{padding:.48rem .76rem;background:var(--map-panel);border-bottom:1px solid var(--line);color:var(--map-muted);font-size:.85rem}.source-example pre{margin:0;padding:.74rem .8rem .85rem;max-width:100%;overflow:auto;font:400 .79rem/1.7 var(--mono);tab-size:2}.source-example pre code{font-size:inherit;overflow-wrap:normal}.source-example pre:focus-visible{outline:2px solid var(--wire);outline-offset:-3px}.code-notes{padding:.14rem 0 0 1.05rem;border-left:2px solid var(--edge);font-size:.91rem;color:var(--muted)}.code-notes p+p{margin-top:.66rem}.code-notes strong{color:var(--ink)}.code-jump{display:flex;flex-wrap:wrap;gap:.35rem 1.1rem;padding:0;margin:0 0 1rem;list-style:none;font-size:.89rem}.code-jump li{margin:0;padding:0}.source-hint{font-size:.84rem;color:var(--muted);margin:.65rem 0 1rem}
+@media(max-width:820px){.code-pair{grid-template-columns:minmax(0,1fr)}.code-notes{padding-left:.68rem}.source-example pre{font-size:.76rem}}
+@media print{.code-pair{grid-template-columns:1fr}.source-example pre{white-space:pre-wrap;overflow-wrap:anywhere}.source-example{break-inside:avoid}}
+</style>
+</head>
+<body>
+<a class="skip" href="#content">跳到架构正文</a>
+<header class="masthead"><div class="wrap"><div class="brand"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 6v12M5 12h9a5 5 0 0 0 5-5"/><circle cx="5" cy="5" r="2.4" fill="var(--paper)"/><circle cx="5" cy="19" r="2.4" fill="var(--paper)"/><circle cx="19" cy="5" r="2.4" fill="var(--paper)"/></svg>需求交付台</div><nav aria-label="章节"><a href="#modules">模块边界</a><a href="#flow">交付流程</a><a href="#verification">验证门禁</a><a href="#state">状态与恢复</a><a href="#sources">源码索引</a></nav></div></header>
+<main id="content" class="wrap">
+<div class="intro"><div><h1>需求交付台架构图解</h1><p>从飞书的一条需求，到远程 <code>master</code> 上可核验的提交。Agent 负责设计、开发和操作验证，Electron 主进程掌管任务状态与 Git 交付。</p></div><dl class="edition"><dt>应用版本</dt><dd><code>0.2.17</code></dd><dt>源码快照</dt><dd><code>b95d175</code></dd></dl></div>
+<div class="report-tabs" id="report-tabs" role="tablist" aria-label="架构文档视图" hidden>
+<a role="tab" id="tab-overview" href="#overview-panel" aria-controls="overview-panel" aria-selected="true">架构总览</a>
+<a role="tab" id="tab-workflow" href="#workflow-panel" aria-controls="workflow-panel" aria-selected="false" tabindex="-1">编排与门禁详解</a>
+</div>
+<div id="overview-panel" data-report-panel>
+<figure class="blueprint" aria-labelledby="diagram-title">
+<div class="figure-head"><h2 id="diagram-title">系统边界与数据流</h2><span>点击模块可跳到详解</span></div>
+<svg viewBox="0 0 1040 443" role="group" aria-labelledby="map-title map-desc">
+<title id="map-title">需求交付台系统架构</title><desc id="map-desc">飞书与 React 界面分别通过飞书适配层和受限 IPC 连接 Electron 主进程。主进程维护 SQLite 和 Git worktree，通过 Utility Process 调用 Agent SDK；只有主进程更新 Git 远程。</desc>
+<defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path fill="#c9b2fa" d="M0 0 8 4 0 8Z"/></marker></defs>
+<rect class="zone" x="264" y="16" width="464" height="308" rx="11"/>
+<text class="zone-title" x="283" y="45">Electron 主进程</text><text class="zone-note" x="709" y="45" text-anchor="end">权限与状态中心</text>
+<g aria-hidden="true">
+<path class="wire both" d="M197 109H282"/><path class="wire both" d="M197 236H232V152H489V109H514"/>
+<path class="wire" d="M376 138V179"/><path class="wire" d="M611 138V179"/>
+<text class="edge-label" x="621" y="164">配置重启</text>
+<path class="wire both" d="M708 218H758V122H791"/><path class="wire both" d="M902 174V237"/>
+<path class="wire both" d="M343 255V365"/><path class="wire both" d="M642 255V365"/><path class="wire" d="M728 400H791"/>
+<text class="edge-label" x="239" y="98" text-anchor="middle">收发消息</text><text class="edge-label" x="223" y="192" text-anchor="end">IPC</text><text class="edge-label" x="756" y="108" text-anchor="middle">调用／事件</text>
+<text class="edge-label" x="902" y="209" text-anchor="middle">模型请求／流式响应</text><text class="edge-label" x="343" y="347" text-anchor="middle">读写状态</text><text class="edge-label" x="642" y="347" text-anchor="middle">操作工作树</text><text class="edge-label" x="758" y="387" text-anchor="middle">推送／更新</text>
+</g>
+<a href="#channel" aria-label="飞书消息与卡片，查看渠道详解"><rect class="node" x="16" y="73" width="181" height="72" rx="7"/><text x="31" y="102">飞书消息与卡片</text><text class="sub" x="31" y="124">需求入口 / 通知 / 回调</text></a>
+<a href="#desktop" aria-label="React Renderer，查看桌面界面详解"><rect class="node" x="16" y="197" width="181" height="80" rx="7"/><text x="31" y="228">React Renderer</text><text class="sub" x="31" y="251">队列与任务详情</text></a>
+<a href="#channel" aria-label="飞书适配与附件详解"><rect class="node" x="283" y="79" width="187" height="59" rx="6"/><text x="296" y="104">渠道与附件</text><text class="sub" x="296" y="124">飞书长连接 / 本地入库</text></a>
+<a href="#desktop" aria-label="Preload IPC 详解"><rect class="node" x="515" y="79" width="193" height="59" rx="6"/><text x="528" y="104">IPC handlers</text><text class="sub" x="528" y="124">固定接口 / 只读查询</text></a>
+<a href="#workflow-panel" class="major" aria-label="打开编排与门禁详解标签页"><rect class="node" x="283" y="180" width="425" height="75" rx="7"/><text x="299" y="210">Workflow：任务编排与交付门禁</text><text class="sub" x="299" y="234">串行执行任务阶段；检查、验证和远程更新均由主进程裁决</text></a>
+<a href="#orchestration" aria-label="运行时和配置详解"><rect class="node" x="378" y="275" width="232" height="32" rx="4"/><text class="sub" x="494" y="296" text-anchor="middle">Runtime 调度 / safeStorage 配置</text></a>
+<a href="#agent" aria-label="Utility Process 与 Agent SDK 详解"><rect class="node" x="792" y="74" width="232" height="100" rx="7"/><text x="808" y="101">Agent Utility Process</text><text class="sub" x="808" y="125">Claude Agent SDK / CLI</text><text class="sub" x="808" y="147">设计 · 开发 · 操作验证</text></a>
+<a href="#agent" aria-label="模型服务配置详解"><rect class="node" x="792" y="238" width="232" height="65" rx="7"/><text x="808" y="266">模型服务</text><text class="sub" x="808" y="286">可配置 Anthropic 兼容端点</text></a>
+<a href="#state" aria-label="本地持久化详解"><rect class="node" x="264" y="366" width="212" height="64" rx="7"/><text x="279" y="395">本地持久化</text><text class="sub" x="279" y="414">SQLite WAL / 附件文件</text></a>
+<a href="#git" aria-label="Git worktree 详解"><rect class="node" x="515" y="366" width="213" height="64" rx="7"/><text x="529" y="395">本地 Git worktree</text><text class="sub" x="529" y="414">任务分支 / 合并候选</text></a>
+<a href="#git" aria-label="远程分支更新详解"><rect class="node" x="792" y="366" width="232" height="64" rx="7"/><text x="808" y="395">Git 远程</text><text class="sub" x="808" y="414">同名任务分支 / master</text></a>
+</svg>
+<ul class="map-mobile" aria-label="系统边界与数据流（文字版）">
+<li><a href="#channel">飞书消息 ↔ 渠道适配</a>：消息与附件入站，任务卡片出站。</li>
+<li><a href="#desktop">React Renderer ↔ 受限 IPC</a>：查看安全视图、保存配置。</li>
+<li><a href="#workflow-panel">Electron 主进程的编排与门禁</a>：串行调度各阶段，读写 SQLite，并裁决 Git 交付。</li>
+<li><a href="#agent">主进程 ↔ Agent Utility Process ↔ 模型服务</a>：隔离 SDK 调用，回传公开正文和证据摘要。</li>
+<li><a href="#git">主进程 → Git worktree → Git 远程</a>：验证通过后才更新同名任务分支和远程 <code>master</code>。</li>
+</ul>
+<figcaption><span class="legend" aria-label="图例"><span class="legend-item"><span class="key" aria-hidden="true">→</span>单向动作</span><span class="legend-item"><span class="key" aria-hidden="true">↔</span>双向交换</span><span class="legend-item"><span class="key dash" aria-hidden="true"></span>主进程边界</span></span>Preload 位于 Renderer 的隔离上下文；IPC 通过只读查询访问 SQLite。Agent 设计读取原仓库，开发和操作验证使用对应工作树。</figcaption>
+</figure>
+<div class="article">
+<section id="modules" class="chapter" aria-labelledby="modules-title">
+<div class="chapter-head"><h2 id="modules-title">模块边界</h2><p>这是一款本地桌面应用，不是远程任务服务。飞书负责需求和审批交互，桌面负责观察与配置，主进程持有任务和交付状态。</p></div>
+<div class="module-list">
+<article class="module" id="channel"><h3>飞书渠道与附件</h3><p><code>feishu.js</code> 通过 <code>@larksuite/channel</code> 接收消息和卡片动作，把标准化输入交给 Workflow。普通需求支持开发和缺陷修复入口；配置了 TAPD 来源后，还能导入匹配群与发送方的卡片，按精确项目名路由。普通群消息受操作人和需求格式约束；显式群与发送方匹配针对 TAPD 导入。</p><p>图片需作为同会话中已登记任务卡片的回复，由任务所有者提交。下载后验证 PNG、JPEG 或 WebP，单张上限 8 MiB、每任务至多 8 张且合计不超过 24 MiB，按 SHA-256 去重。Agent 得到经校验的本地图片路径，Renderer 只读附件元数据。入站写库与 outbox 卡片投递相互独立。</p><a class="ref" href="#src-channel">源码：渠道、附件与入口</a></article>
+<article class="module" id="desktop"><h3>React、Preload 与 IPC</h3><p>左侧队列，右侧过程、方案、验证和交付，设置走独立抽屉。Renderer 通过 <code>window.desktop</code> 调用固定接口；Preload 不暴露通用 IPC。主进程借 <code>dispatch.js</code> 读取本地快照，并发送 <code>tasks:changed</code> 通知。列表另有 5 秒兜底轮询，运行中任务详情每 1.5 秒刷新。</p><p>BrowserWindow 启用上下文隔离和 Renderer 沙箱，禁用 Node 集成；配置读写 IPC 显式检查发送窗口。公开配置只返回密钥是否配置，不返回明文。</p><a class="ref" href="#src-desktop">源码：应用壳、桥接与界面订阅</a></article>
+<article class="module" id="orchestration"><h3>Runtime 与 Workflow</h3><p><code>Runtime.start()</code> 装配 Store、项目目录、附件存储、Git 仓库与 Agent 执行器，先恢复任务，再按开关连接飞书。每秒调度一次：任务 worker 串行推进，通知 publisher 独立运行，各自最多一个在途调用。</p><p>配置保存在应用 <code>userData/settings.json</code>；App Secret、API Key 由 Electron <code>safeStorage</code> 加密，留空保留旧值。保存通过主进程校验项目后，重启运行时。<code>baseBranch</code> 是工作树基线；交付目标始终是所配置远端的 <code>master</code>，两者是不同概念。</p><a class="ref" href="#src-runtime">源码：装配、配置与调度</a></article>
+<article class="module" id="agent"><h3>Agent Utility Process</h3><p>主进程通过 <code>AgentProcess</code> 发送一次调用所需的模型配置与上下文；Utility Process 封装 Claude Agent SDK 会话以及流式事件采集。设计在原仓库根目录用只读工具运行；开发和独立验证在对应工作树运行。Agent 不持有任务数据库接口，也不替主进程做远端交付裁决。</p><p>子进程按需启动，调用以 ID 匹配；取消会中止对应 SDK 查询，子进程退出会让在途调用失败，后续可重新启动。公开正文只取顶层文本增量，最终文本来自 SDK <code>result</code>；工具活动和验证证据走单独事件。SDK 会话 ID 可用于恢复调用，合并候选实测使用新会话。</p><a class="ref" href="#src-agent">源码：Agent 适配与子进程协议</a></article>
+</div>
+</section>
+<section id="flow" class="chapter" aria-labelledby="flow-title">
+<div class="chapter-head"><h2 id="flow-title">交付流程</h2><p>完整需求自动进入设计，无需逐单确认设计方案。「已推送任务分支」和「已交付」是两个不同的事实。</p></div>
+<ol class="flow" aria-label="需求交付主链路">
+<li><h3>接收需求</h3><p>识别任务类型、项目和有效正文；信息不足就发补充卡片。</p><p class="state">confirm / design_queued</p></li>
+<li><h3>设计方案</h3><p>只读分析范围、风险、验证计划；写入方案版本。</p><p class="state">designing → queued</p></li>
+<li><h3>开发并提交</h3><p>先保存 worktree 意图，再建隔离工作树；开发 Agent 创建本地提交。</p><p class="state">developing → verifying</p></li>
+<li><h3>审核和验证</h3><p>检查真实提交、差异和工作树，运行固定检查；需要时再补操作证据。</p><p class="state">verifying</p></li>
+<li><h3>推送并合入</h3><p>先推同名任务分支，再合入同一远端的 master；回读确认后才完成。</p><p class="state">verifying → delivered</p></li>
+</ol>
+<h3 id="git" class="subhead">Git 交付：两次远端更新，一次完成判定</h3>
+<div class="ledger">
+<div><h3>任务分支</h3><p>按需求类型创建 <code>feature/&lt;任务 ID&gt;_YYYYMMDD</code> 或 <code>fix/&lt;任务 ID&gt;_YYYYMMDD</code>。以配置的本地基线提交建立工作树。主进程核验 HEAD、分支和差异；空提交、脏工作树或返工无增量都不能视为完成。推送前核对远端旧值，成功后先持久化任务分支交付记录。</p></div>
+<div><h3>同一远端的 <code>master</code></h3><p>目标已包含任务提交则直接确认；可快进则复用已验证提交。若分叉，先生成双父合并提交并保存候选，在隔离工作树对候选重新审查和验证，再核对远端引用并更新。最后回读目标，确认包含候选提交才写入 <code>delivered</code>。</p></div>
+</div>
+<div class="notice"><p><strong>失败不等于回滚任务分支。</strong> 合并冲突、远端变化、分支保护或候选验证失败会阻塞交付。若任务分支已推送，记录仍在，重试会重新核对已有提交与证据。应用不会把部署或外部工单回写算作这条链路的一部分。</p></div>
+<a class="ref" href="#src-git">源码：工作树、主链路与远端引用更新</a>
+</section>
+<section id="verification" class="chapter" aria-labelledby="verify-title">
+<div class="chapter-head"><h2 id="verify-title">验证门禁</h2><p>主进程运行项目已配置的固定检查。只有本次变更直接涉及且缺少自动化覆盖的真实操作行为，才额外要求逐步操作证据。</p></div>
+<div class="principles">
+<div><h3>先审查，再执行</h3><p>对实际 Git 差异应用删除和高风险变更规则。删除需要正文中的精确路径授权；未授权删除或命中可疑脚本规则需审批。审批绑定具体提交。</p></div>
+<div><h3>先固定检查，再补证据</h3><p>来自项目配置的可执行文件与参数按顺序运行。检查结束后复核待验提交、分支和工作树，不能用检查过程中改写过的代码作为交付对象。</p></div>
+<div><h3>先验证，后推送</h3><p>固定检查、适用的操作验证和审批全部满足才推送。分叉产生新合并候选时，不能拿任务分支上的结论直接替代候选检查。</p></div>
+</div>
+<h3 class="subhead">操作证据的复用顺序</h3>
+<div class="split">
+<ol class="ladder">
+<li><h3>项目的自动化操作报告</h3><p>优先采用项目预先配置的 <code>kind: operation</code> 检查报告，由主进程校验是否对应待验任务与步骤。</p></li>
+<li><h3>开发 Agent 已采集的证据</h3><p>复用同一提交上符合要求的操作观察，避免在后置验证阶段重复执行。</p></li>
+<li><h3>独立验证 Agent 补缺</h3><p>先恢复身份匹配的检查点，再只跑缺失步骤。Node / Electron 项目按适用条件在工作树内做依赖和目标 Electron 版本预检。</p></li>
+</ol>
+<div>
+<h3>证据不是模型结论</h3><p>操作断言和观察须来自同一实际操作程序。证据绑定需求版本、方案版本、提交、基线与完整步骤；Agent 证据包含工具调用 ID 与完整输出 SHA-256。独立截图、普通文件读取和最终一句 <code>passed</code> 都不能替代逐步记录。操作类缺陷还需基线复现，修复后的观察必须与基线不同。</p>
+<div class="budget" aria-label="默认验证时限"><div><strong>15 分钟</strong>整个验证阶段</div><div><strong>10 分钟</strong>单次独立验证</div><div><strong>60 秒</strong>等待首个 SDK 协议事件</div><div><strong>3 分钟</strong>没有模型或工具进展</div></div>
+</div>
+</div>
+<details class="expand"><summary>验证预检与采集实现</summary><p>有 npm 锁文件的 Node 项目先核对锁文件、依赖指纹及已安装包，缓存失效才重新安装。直接依赖 Electron 时还要探测工作树所需的确切版本，缺失时补齐同版本，不以本机另装的应用或 Electron 替代。版本探测不验证界面行为；预检失败不启动独立验证 Agent。</p><p>Utility Process 从 SDK 持久化文件、结构化 stdout 或后台任务输出文件提取观察；同步结果缺少结构化输出时，回退到 SDK 命令结果文本。SHA-256 针对实际读到的证据来源。首个 SDK 事件结束启动计时；活动可重置无进展计时，不能延长单次总预算。15 分钟外层预算还涵盖固定检查、预检、推送和合入。</p></details>
+<a class="ref" href="#src-verification">源码：验证门禁、审查、预检与证据采集</a> · <a class="ref" href="#review-rules">查看逐关放行条件</a>
+</section>
+<section id="state" class="chapter" aria-labelledby="state-title">
+<div class="chapter-head"><h2 id="state-title">状态与恢复</h2><p>SQLite 是任务状态的依据。工作树、提交、检查点和通知映射都有已落盘的身份，重试并不意味着从设计起全部重跑。</p></div>
+<div class="table-wrap"><table class="stage-table"><thead><tr><th scope="col">条件</th><th scope="col">状态与处理</th><th scope="col">重试时保留什么</th></tr></thead><tbody>
+<tr><th scope="row">项目或正文不足</th><td><code>confirm</code>；补充后重新识别，满足条件进 <code>design_queued</code>。</td><td>任务编号与历史；需求版本变化使旧方案与审批失效。</td></tr>
+<tr><th scope="row">替代方案</th><td><code>manual_review</code>；批准后进入开发队列，拒绝则阻塞。</td><td>批准绑定需求和方案版本，原需求正文仍保留。</td></tr>
+<tr><th scope="row">提交需要审批</th><td><code>manual_review</code>；批准后进入 <code>verify_queued</code>。</td><td>只授权被审查的提交，提交有变则重新判断。</td></tr>
+<tr><th scope="row">检查失败、超时或 Git 异常</th><td><code>blocked</code>；记录失败阶段，重试回对应队列。验证失败也可进入返工。</td><td>匹配当前身份的证据、已推送记录及合并候选可复用。</td></tr>
+<tr><th scope="row">取消或应用重启</th><td>取消先写 <code>cancelled</code> 再中止。重启可继续调度排队任务，残留运行态标为中断和阻塞，不自动继续危险写操作。</td><td>保留任务历史、工作树意图和验证进度；旧版已推送任务不被自动合并。</td></tr>
+</tbody></table></div>
+<h3 class="subhead">落盘与读模型</h3>
+<div class="principles">
+<div><h3>任务与历史</h3><p>数据库位于数据目录，以飞书 App ID（未配置时用 <code>local</code>）命名，使用 <code>node:sqlite</code> 的 WAL。<code>tasks</code> 存当前态，<code>history</code> 存修订快照；常规状态更新用乐观 revision 核对后写入任务、历史和通知。</p></div>
+<div><h3>事件与通知</h3><p><code>events</code> 记录入站去重，<code>outbox</code> 记录待发通知；首次发送复用幂等键，已有卡片按消息 ID 更新。网络失败退避重试。卡片动作还需匹配操作者、任务、消息和当前 revision。</p></div>
+<div><h3>查询与进展</h3><p><code>dispatch</code> 只读生成任务摘要和详情。进展可不增加卡片 revision，公开正文独立按调用保存：每任务最近 8 份有正文记录，每份保留末尾约 24,000 字符。</p></div>
+</div>
+<a class="ref" href="#src-state">源码：状态持久化、恢复、通知与查询</a>
+</section>
+<section id="sources" class="chapter" aria-labelledby="sources-title">
+<div class="chapter-head"><h2 id="sources-title">源码索引</h2><p>行号对应源码快照 <code>b95d175</code>。阅读时可先从 Runtime 装配入口出发，再按下表跳到相应源码。</p></div>
+<div class="table-wrap"><table class="index-table"><thead><tr><th scope="col">关注点</th><th scope="col">入口与关键实现（仓库相对路径）</th></tr></thead><tbody>
+<tr id="src-desktop"><th scope="row">桌面窗口和 IPC</th><td><code>electron/main.ts:14</code><code>electron/preload.cts:9</code><code>electron/ipc.ts:9</code><code>renderer/App.tsx:132</code></td></tr>
+<tr id="src-runtime"><th scope="row">装配、配置和串行调度</th><td><code>electron/runtime.ts:34</code><code>electron/config.ts:44</code><code>electron/project.ts:16</code><code>src/workflow.js:519</code></td></tr>
+<tr id="src-channel"><th scope="row">飞书、附件和接收</th><td><code>src/feishu.js:340</code><code>src/attachment-intake.js</code><code>src/attachments.js</code><code>src/workflow.js:346</code></td></tr>
+<tr id="src-agent"><th scope="row">Agent 子进程与 SDK</th><td><code>src/agent.js</code><code>electron/agent-client.ts</code><code>electron/agent-runner.ts</code><code>src/agent-activity.js</code></td></tr>
+<tr id="src-git"><th scope="row">工作树和 Git 交付</th><td><code>src/repository.js:100</code><code>src/repository.js:247</code><code>src/repository.js:315</code><code>src/workflow.js:833</code></td></tr>
+<tr id="src-verification"><th scope="row">变更审查、预检和证据</th><td><code>src/change-review.js:13</code><code>src/workflow.js:634</code><code>src/agent-evidence.js</code><code>src/operation-preflight.js</code><code>src/operation-electron.js</code></td></tr>
+<tr id="src-state"><th scope="row">状态、通知和恢复</th><td><code>src/workflow.js:417</code><code>src/workflow.js:467</code><code>src/workflow.js:883</code><code>src/store.js:4</code><code>src/dispatch.js:127</code><code>src/lifecycle.js:2</code></td></tr>
+</tbody></table></div>
+<details class="expand"><summary>实现边界与旧设计文档的差异</summary><ul><li><strong>进程隔离不是文件系统沙箱。</strong> 设计使用 <code>plan</code> 与读取工具；开发和验证源码请求的是 <code>bypassPermissions</code>，不是 SDK 的 <code>auto</code>。工作树是 Git 工作目录隔离，验证范围也有提示词约束。当前 SDK 类型文档声明该权限模式需要显式额外开关，Runner 未传；打包 smoke 只覆盖设计阶段，因此本文不将开发与验证阶段的权限行为标为已实测。见 <code>electron/agent-runner.ts:59</code>、<code>scripts/smoke-packaged-agent.mjs:69</code>。</li><li><strong>不要把版本探测超时当作清理超时。</strong> 当前代码给 Electron 版本探测 10 秒；独立验证的 <code>finally</code> 等待预检资源清理，没有单独的同值计时器。应用退出另有默认 5 秒的外层清理预算。见 <code>src/operation-electron.js:78</code>、<code>src/agent.js:141</code>、<code>src/lifecycle.js:2</code>。</li></ul></details>
+<details class="expand"><summary>构建、发行与测试覆盖</summary><ul><li><strong>构建：</strong> Electron Main、Preload、Utility Process 和 JavaScript 业务核心由 <code>tsconfig.electron.json:15</code> 定义构建范围；React 界面由 Vite 构建。声明文件负责连接 TypeScript 壳和部分 JavaScript 核心接口。</li><li><strong>发行：</strong> <code>package.json:12</code> 定义测试和构建脚本；<code>scripts/package-release.mjs:40</code> 先跑回归测试，再生成 Windows NSIS 安装包、核对包内版本并计算 SHA-256。</li><li><strong>覆盖：</strong> <code>test/workflow.test.js</code>、<code>test/repository.test.js</code>、<code>test/store.test.js</code> 等覆盖业务流程、Git 工作树和 SQLite；<code>scripts/smoke-electron.mjs</code>、<code>scripts/smoke-installer.mjs</code>、<code>scripts/smoke-packaged-agent.mjs</code> 分别提供桌面、安装和打包 Agent 启动验证。真实飞书与模型联调仍是独立发布验收，不等同于这份静态架构说明。</li></ul></details>
+</section>
+</div>
+</div>
+<div id="workflow-panel" data-report-panel>
+<header class="deep-hero">
+<h2>任务编排与审查门禁</h2>
+<p>对照仓库中的实际代码，沿着 <code>Runtime → Workflow → Repository</code> 追踪一次任务。每段保留文件名和行号，解释关键判断、写入的数据和后续分支。</p>
+<nav class="deep-links" aria-label="编排与门禁章节"><a href="#workflow-controls">调度与恢复源码</a><a href="#review-rules">审查与放行源码</a><a href="#workflow-examples">典型分支</a></nav>
+</header>
+<div class="article deep-body">
+<section class="chapter" id="workflow-controls" aria-labelledby="workflow-controls-title">
+<div class="chapter-head"><h2 id="workflow-controls-title">调度与恢复</h2><p>从定时器触发，到事务领取、写回和恢复。</p></div>
+<ul class="code-jump" aria-label="调度代码索引"><li><a href="#queue-code">领取任务</a></li><li><a href="#persist-code">落盘与写回</a></li><li><a href="#approval-code">两类审批</a></li><li><a href="#recover-code">中断与重试</a></li></ul>
+<p class="source-hint">以下为 <code>b95d175</code> 的原样摘录，并非完整函数；长行可在代码框内横向滚动。</p>
+<article class="walkthrough" id="queue-code"><h3>领取：定时器触发，事务决定谁运行</h3><div class="code-pair">
+<div class="source-stack">
+<figure class="source-example"><figcaption id="cap-runtime"><code>electron/runtime.ts:62–67</code> 定时调度</figcaption><pre tabindex="0" aria-labelledby="cap-runtime"><code data-source="electron/runtime.ts:62-67">    this.timer = setInterval(() =&gt; {
+      this.notify()
+      if (!config.enabled || !this.workflow) return
+      this.worker ??= this.workflow.work().catch(report).finally(() =&gt; { this.worker = undefined })
+      if (this.channel) this.publisher ??= this.workflow!.publish(this.channel).catch(report).finally(() =&gt; { this.publisher = undefined })
+    }, 1000)</code></pre></figure>
+<figure class="source-example"><figcaption id="cap-queue"><code>src/workflow.js:519–529</code> 领取任务</figcaption><pre tabindex="0" aria-labelledby="cap-queue"><code data-source="src/workflow.js:519-529">  async function work() {
+    if (controller) return
+    const task = store.transaction(() =&gt; {
+      if (store.inStage(...inFlight).length) return
+      const [next] = store.inStage('design_queued', 'queued', 'verify_queued')
+      if (!next) return
+      const kind = { design_queued: 'designing', queued: 'developing', verify_queued: 'verifying' }[next.stage]
+      next.attempt = { id: randomUUID(), kind, startedAt: Date.now(), status: 'running' }
+      update(next, kind)
+      return next
+    })</code></pre></figure>
+</div><div class="code-notes">
+<p><strong><code>??=</code> 防止重入。</strong> 每秒回调时，如果上一次 worker 的 Promise 还在，就不会再次调用 <code>work()</code>；<code>finally</code> 才清空引用。publisher 有独立引用，所以发卡片可以与任务运行重叠。</p>
+<p><strong>查运行态和写运行态是同一事务。</strong> <code>inFlight</code> 对应设计中、开发中、验证中。<code>inStage()</code> 用 <code>ORDER BY rowid</code>（<code>src/store.js:83</code>），因此 <code>[next]</code> 取的是三个待执行状态里最早入库的任务，不按状态参数的排列优先。</p>
+<p><strong><code>update(next, kind)</code> 先落盘。</strong> 领取时同时生成 attempt ID 并写入运行态；事务成功后才继续执行本轮任务。</p>
+</div></div></article>
+<article class="walkthrough" id="persist-code"><h3>推进：先写工作树意图，再执行 Git 操作</h3><div class="code-pair">
+<div class="source-stack">
+<figure class="source-example"><figcaption id="cap-intent"><code>src/workflow.js:795–801</code> 保存工作树意图</figcaption><pre tabindex="0" aria-labelledby="cap-intent"><code data-source="src/workflow.js:795-801">      const validation = validationFor(task)
+      if (!task.work) {
+        task.work = await repository.intent({ task, project, signal })
+        persist(task.stage)
+      }
+      task.work = await repository.prepare({ task, project, signal })
+      persist(task.stage)</code></pre></figure>
+<figure class="source-example"><figcaption id="cap-persist"><code>src/workflow.js:545–551</code> 防止过期写回</figcaption><pre tabindex="0" aria-labelledby="cap-persist"><code data-source="src/workflow.js:545-551">    const persist = (stage, afterTimeout = false) =&gt; store.transaction(() =&gt; {
+      const executionSignal = afterTimeout ? running.signal : signal
+      executionSignal.throwIfAborted()
+      if (store.get(task.id)?.attempt?.id !== attemptId || store.get(task.id)?.stage === 'cancelled') throw new Error('任务运行已结束。')
+      update(task, stage)
+      watchStage(stage)
+    })</code></pre></figure>
+</div><div class="code-notes">
+<p><strong><code>intent()</code> 先确定身份。</strong> 第一次 <code>persist()</code> 保存仓库、目录、分支和基线意图；<code>prepare()</code> 再创建或核对实际工作树，第二次保存准备结果。如果创建后、写回前中断，重试可按意图核对已有目录。</p>
+<p><strong><code>persist()</code> 拒绝过期状态。</strong> 一般写入受取消和验证超时共同约束；<code>afterTimeout</code> 用于记录超时失败，但仍尊重用户取消。数据库的 attempt ID 不同或任务已取消时，旧调用不能写回。</p>
+<p>设计阶段成功会增加 <code>planVersion</code> 并返回队列（<code>src/workflow.js:777</code>）；开发结束写入 <code>verifying</code> 后则在本次 <code>work()</code> 中继续（<code>src/workflow.js:826</code>）。</p>
+</div></div></article>
+<article class="walkthrough" id="approval-code"><h3>审批：同一个按钮，按审查类型走不同分支</h3><div class="code-pair">
+<figure class="source-example"><figcaption id="cap-approval"><code>src/workflow.js:433–447</code> 处理批准</figcaption><pre tabindex="0" aria-labelledby="cap-approval"><code data-source="src/workflow.js:433-447">      case 'approve_manual': {
+        const review = task.manualReview
+        if (review?.kind === 'alternative') {
+          task.alternativeApproval = { proposal: review.proposal, requirementVersion: task.requirementVersion, planVersion: task.planVersion }
+          task.manualReview = null
+          update(task, 'queued')
+        } else if (review?.kind === 'change' &amp;&amp; review.commit === (task.mergeResult ?? task.result)?.changeReview?.commit &amp;&amp;
+            review.commit === (task.mergeResult ?? task.result)?.commit) {
+          task.changeReviewApproval = { commit: review.commit }
+          task.manualReview = null
+          update(task, 'verify_queued')
+        } else {
+          return '审批内容已失效，请重新生成。'
+        }
+        break</code></pre></figure>
+<div class="code-notes">
+<p><strong><code>alternative</code> 是范围决定。</strong> 保存获批方案及需求、方案版本，回 <code>queued</code> 排队开发，不直接进入验证。</p>
+<p><strong><code>change</code> 是具体提交的决定。</strong> <code>mergeResult ?? result</code> 优先找当前候选结果；只有待审 SHA 同时匹配结果和审查记录，才写 <code>changeReviewApproval</code> 并回 <code>verify_queued</code>。不匹配就返回「审批内容已失效」。</p>
+<p>按钮进入此函数前，<code>onAction()</code> 还会核对操作人、任务归属、会话、卡片消息 ID 和 revision（<code>src/workflow.js:478</code>）。</p>
+</div></div></article>
+<article class="walkthrough" id="recover-code"><h3>恢复：在途任务先阻塞，再按失败阶段重试</h3><div class="code-pair">
+<div class="source-stack">
+<figure class="source-example"><figcaption id="cap-recover"><code>src/workflow.js:505–514</code> 启动恢复</figcaption><pre tabindex="0" aria-labelledby="cap-recover"><code data-source="src/workflow.js:505-514">      for (const task of store.inStage(...inFlight)) {
+        if (task.attempt?.status === 'running') {
+          task.attempt.status = 'error'
+          task.attempt.stopReason = 'interrupted'
+          task.attempt.finishedAt = Date.now()
+        }
+        task.failedStage = task.stage
+        task.error = '上次运行中断。重试时会先核对已有工作树。'
+        update(task, 'blocked')
+      }</code></pre></figure>
+<figure class="source-example"><figcaption id="cap-retry"><code>src/workflow.js:449–457</code> 拒绝或重试</figcaption><pre tabindex="0" aria-labelledby="cap-retry"><code data-source="src/workflow.js:449-457">      case 'decline_manual':
+        task.failedStage = task.manualReview.sourceStage
+        task.error = '所有者拒绝了待审批事项。'
+        task.manualReview = null
+        update(task, 'blocked')
+        break
+      case 'retry':
+        update(task, { designing: 'design_queued', developing: 'queued', verifying: 'verify_queued' }[task.failedStage])
+        break</code></pre></figure>
+</div><div class="code-notes">
+<p><strong>重启不会续跑旧调用。</strong> 残留运行态的 attempt 标为 <code>interrupted</code>，原阶段写入 <code>failedStage</code> 后才改成 <code>blocked</code>。已在队列中的任务仍可正常被领取。</p>
+<p><strong>重试按失败阶段路由。</strong> 例如 <code>verifying</code> 失败只回 <code>verify_queued</code>；能否复用已完成工作由后续的提交、证据和交付记录核对决定。取消则先保存 <code>cancelled</code>，再中止匹配调用（<code>src/workflow.js:467</code>、<code>src/workflow.js:487</code>）。</p>
+</div></div></article>
+</section>
+<section class="chapter" id="review-rules" aria-labelledby="review-rules-title">
+<div class="chapter-head"><h2 id="review-rules-title">审查与放行</h2><p>沿 <code>verifyCommit()</code>、<code>push()</code>、<code>integrate()</code> 的调用顺序，找出哪些判断会停住交付。</p></div>
+<ul class="code-jump" aria-label="审查代码索引"><li><a href="#review-diff-code">提交与差异</a></li><li><a href="#review-check-code">固定检查</a></li><li><a href="#review-evidence-code">证据复用</a></li><li><a href="#review-push-code">推送与合入</a></li></ul>
+<article class="walkthrough" id="review-diff-code"><h3>提交与差异：为什么项目命令还没执行就能暂停？</h3><div class="code-pair">
+<div class="source-stack">
+<figure class="source-example"><figcaption id="cap-verify"><code>src/repository.js:200–216</code> 工作树检查与审查顺序</figcaption><pre tabindex="0" aria-labelledby="cap-verify"><code data-source="src/repository.js:200-216">    const cleanCheck = { label: requireNewCommit ? '检查本轮返工提交与工作树' : '检查本地提交与工作树', passed: false }
+    const noNewCommit = commit === base || (requireNewCommit &amp;&amp; commit === previousCommit)
+    const delta = requireNewCommit &amp;&amp; !noNewCommit
+      ? await git(worktree, signal, 'diff', '--no-ext-diff', '--no-textconv', '--stat', previousCommit, commit, '--')
+      : committed
+    if (status || noNewCommit || (!candidate &amp;&amp; !delta.trim())) {
+      cleanCheck.output = status ? '工作树还有未提交的改动。' : noNewCommit
+        ? requireNewCommit ? '本轮返工没有产生新提交。' : '分支没有新增提交。'
+        : '提交没有实际代码差异，禁止用空提交进入交付验证。'
+      checks.push(cleanCheck)
+      return result
+    }
+    result.changeReview = await reviewChanges({ task, worktree, base, commit, signal,
+      ...(candidate &amp;&amp; { branchReviewBase: null }) })
+    if (result.changeReview.approvalRequired) return result
+    const snapshot = { worktree, commit, branch, signal }
+    let unchanged = await matchesWorktree(snapshot)</code></pre></figure>
+<figure class="source-example"><figcaption id="cap-diff"><code>src/change-review.js:43–54</code> 当前提交是否需要审批</figcaption><pre tabindex="0" aria-labelledby="cap-diff"><code data-source="src/change-review.js:43-54">  const findings = [...new Set([...deletions, ...warnings.keys()])]
+  if (findings.length &gt; maxFindings || findings.some(path =&gt; path.length &gt; maxPathLength || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\ufffd]/u.test(path))) {
+    throw new Error('改动审查超出可安全展示的范围，请缩小提交范围或人工处理。')
+  }
+  const unapprovedDeletions = [...deletions].filter(path =&gt; !approved.has(path))
+  return {
+    commit,
+    deletions: [...deletions],
+    unapprovedDeletions,
+    warnings: [...warnings].map(([path, reason]) =&gt; ({ path, reason })),
+    approvalRequired: approval?.commit !== commit &amp;&amp; (unapprovedDeletions.length &gt; 0 || warnings.size &gt; 0),
+  }</code></pre></figure>
+</div><div class="code-notes">
+<p><strong>先判断是否有东西可交付。</strong> <code>status</code> 非空、HEAD 等于基线，或返工没有新 SHA 时立即返回失败的 <code>cleanCheck</code>。任务提交还要求实际差异；<code>!candidate</code> 表示不对合并候选套用这一空差异判断。</p>
+<p><strong>审查以实际 Git 差异为输入。</strong> 任务提交对照基线和已有的上次推送；候选只对照 <code>master</code> 父提交。关闭重命名识别以保留原路径；删除和类型变化进入删除集合，符号链接或脚本规则命中进入警告集合（<code>src/repository.js:153</code>、<code>src/change-review.js:20</code>）。</p>
+<p><strong><code>approvalRequired</code> 不是通用授权。</strong> 删除需需求正文逐行授权具体路径；有未授权删除或警告时，只有已批准同一 SHA 才可继续。发现项过多或路径无法安全展示时直接抛错；需审批时，<code>verifyCommit()</code> 写入 <code>manual_review</code>，项目命令尚未执行（<code>src/workflow.js:641</code>）。</p>
+</div></div></article>
+<article class="walkthrough" id="review-check-code"><h3>固定检查：通过的是命令，还是同一个提交？</h3><div class="code-pair">
+<figure class="source-example"><figcaption id="cap-checks"><code>src/repository.js:217–242</code> 执行后复核工作树</figcaption><pre tabindex="0" aria-labelledby="cap-checks"><code data-source="src/repository.js:217-242">    for (const check of project.checks) {
+      if (!unchanged) break
+      signal.throwIfAborted()
+      const operation = check.kind === 'operation'
+      if (operation &amp;&amp; !operationValidation) continue
+      try {
+        const { stdout, stderr } = await exec(check.command, check.args, {
+          cwd: worktree, signal, timeout: check.timeoutMs, maxBuffer: 512 * 1024, windowsHide: true,
+          ...(operation &amp;&amp; { env: { ...process.env, FEISHU_OPERATION_VALIDATION: JSON.stringify(operationValidation), FEISHU_VALIDATED_COMMIT: commit } }),
+        })
+        if (operation) operationReports.push(stdout)
+        checks.push({ label: check.label, passed: true, output: operation ? '' : `${stdout}\n${stderr}`.trim().slice(-1200) })
+      } catch (error) {
+        signal.throwIfAborted()
+        // 只显示有限的命令输出，避免将完整命令或环境信息写入任务卡片。
+        const output = check.kind === 'operation' ? '' : [error.stderr, error.stdout].filter(Boolean).join('\n').trim().slice(-1200)
+        checks.push({ label: check.label, passed: false, output: output || `执行失败 (${error.code ?? error.signal ?? '未知错误'})` })
+      }
+      unchanged = await matchesWorktree(snapshot)
+    }
+    cleanCheck.passed = unchanged
+    if (!cleanCheck.passed) {
+      cleanCheck.output = '检查期间任务分支、提交或工作树发生了变化，请重新审查和验证。'
+      operationReports.length = 0
+    }
+    checks.push(cleanCheck)</code></pre></figure>
+<div class="code-notes">
+<p><strong><code>project.checks</code> 来自项目配置。</strong> 主进程传入可执行文件与参数数组，并用 <code>operationValidation</code> 决定是否执行操作类检查。操作检查拿到当前提交和验证计划，stdout 进入报告列表，而不是直接作为普通日志展示。</p>
+<p><strong><code>matchesWorktree(snapshot)</code> 在每次命令后执行。</strong> HEAD、分支或工作树变化会停止后续命令，清空 <code>operationReports</code>，并让 <code>cleanCheck</code> 失败。普通命令失败会记在 <code>checks</code>；只要有一项没通过，<code>verifyCommit()</code> 就抛错（<code>src/workflow.js:646</code>）。</p>
+</div></div></article>
+<article class="walkthrough" id="review-evidence-code"><h3>操作证据：什么情况下可以跳过重复实测？</h3><div class="code-pair">
+<div class="source-stack">
+<figure class="source-example"><figcaption id="cap-evidence"><code>src/workflow.js:113–128</code> 证据身份及完整性判断</figcaption><pre tabindex="0" aria-labelledby="cap-evidence"><code data-source="src/workflow.js:113-128">function evidenceIdentityMatches(evidence, task, validation, commit) {
+  return evidence?.commit === commit &amp;&amp; evidence.operation === validation.operation &amp;&amp;
+    evidence.expected === validation.expected &amp;&amp; evidence.baseCommit === validation.baseCommit &amp;&amp;
+    evidence.requirementVersion === task.requirementVersion &amp;&amp; evidence.planVersion === task.planVersion &amp;&amp;
+    JSON.stringify(evidence.validationSteps) === JSON.stringify(validation.steps)
+}
+
+function completeStoredEvidence(evidence, validation, task, commit) {
+  if (!evidence) return false
+  const validSteps = Array.isArray(evidence?.steps) &amp;&amp; evidence.steps.length === validation.steps.length &amp;&amp;
+    evidence.steps.every((step, index) =&gt; step?.action === validation.steps[index] &amp;&amp; observation(step.observed) &amp;&amp;
+      (!['agent', 'development'].includes(evidence.source) ||
+        (typeof step.toolId === 'string' &amp;&amp; /^[a-f0-9]{64}$/u.test(step.outputSha256))))
+  const validBaseline = task.type !== 'fix' || (observation(evidence?.baseline) &amp;&amp; evidence.baseline.trim() !== evidence.observed?.trim())
+  return evidenceIdentityMatches(evidence, task, validation, commit) &amp;&amp; observation(evidence?.observed) &amp;&amp; validSteps &amp;&amp; validBaseline
+}</code></pre></figure>
+<figure class="source-example"><figcaption id="cap-checkpoint"><code>src/workflow.js:684–703</code> 实时保存检查点</figcaption><pre tabindex="0" aria-labelledby="cap-checkpoint"><code data-source="src/workflow.js:684-703">            const recordCheckpoint = assertion =&gt; {
+              const next = agentObservationProgress(operationValidation, [...checkpoint.assertions, assertion], result.commit, baseline)
+              if (next.accepted.length === checkpoint.assertions.length) {
+                checkpoint.rejectedSteps = [...checkpoint.rejectedSteps ?? [], {
+                  step: (() =&gt; { try { return JSON.parse(assertion?.line)?.step } catch {} })() ?? null,
+                  commit: (() =&gt; { try { return JSON.parse(assertion?.line)?.commit } catch {} })() ?? null,
+                  validOutput: typeof assertion?.id === 'string' &amp;&amp; /^[a-f0-9]{64}$/u.test(assertion?.sha256),
+                }].slice(-8)
+                saveCheckpoint()
+                return false
+              }
+              checkpoint.assertions = next.accepted
+              checkpoint.completedSteps = next.steps.map((_, index) =&gt; index + 1)
+              checkpoint.baselineReproduced = next.observations.length &gt; next.steps.length
+              checkpoint.phase = operationValidation.type === 'fix' &amp;&amp; !checkpoint.baselineReproduced &amp;&amp; !baseline ? 'baseline' : 'step'
+              checkpoint.lastRecordedAt = Date.now()
+              checkpoint.stepStartedAt = checkpoint.lastRecordedAt
+              saveCheckpoint()
+              return true
+            }</code></pre></figure>
+</div><div class="code-notes">
+<p><strong>身份匹配与证据完整是两回事。</strong> <code>evidenceIdentityMatches()</code> 对比 SHA、操作、预期、基线、需求版本、方案版本和有序步骤；<code>completeStoredEvidence()</code> 再查实际观察和工具标识。缺陷任务还要有与修复结果不同的基线观察。</p>
+<p><strong>先看项目报告，再看已有证据。</strong> <code>verifyCommit()</code> 优先解析操作检查的报告；没有报告时，才评估开发 Agent 或历史证据。匹配但不全时，恢复已有逐步记录，由独立验证 Agent 补缺（<code>src/workflow.js:647</code>、<code>src/workflow.js:668</code>）。</p>
+<p><strong><code>recordCheckpoint()</code> 不把每条输出都当成完成。</strong> 重新计算可接受观察；没新增就只记录近期拒绝诊断，有新增才更新 <code>completedSteps</code>，并立即保存。重试读到的是已核对的进度，不是模型回复里说完成的百分比。</p>
+</div></div></article>
+<article class="walkthrough" id="review-push-code"><h3>推送与合入：为什么写两次远端，却只完成一次？</h3><div class="code-pair">
+<div class="source-stack">
+<figure class="source-example"><figcaption id="cap-delivery"><code>src/workflow.js:833–860</code> 先保存推送，再确认交付</figcaption><pre tabindex="0" aria-labelledby="cap-delivery"><code data-source="src/workflow.js:833-860">      const operationValidation = validation.kind === 'operation' ? { ...validation, type: task.type, baseCommit: task.work.base } : undefined
+      if (task.delivery?.requirementVersion !== task.requirementVersion || task.delivery?.planVersion !== task.planVersion) {
+        delete task.delivery
+        delete task.mergeResult
+      }
+      if (!task.delivery) {
+        const result = await verifyCommit(project, operationValidation)
+        if (!result) return
+        const pushed = await repository.push({ task, project, signal, result })
+        delete task.operationCheckpoint
+        task.work.pushedCommit = pushed.commit
+        task.result.remote = pushed.remote
+        task.delivery = { requirementVersion: task.requirementVersion, planVersion: task.planVersion }
+        persist('verifying')
+      }
+      const merged = await repository.integrate({ task, project, signal, result: task.result, savedCandidate: task.delivery.candidate,
+        recordCandidate(candidate) {
+          task.delivery.candidate = candidate
+          if (task.mergeResult?.commit !== candidate.commit) delete task.mergeResult
+          persist('verifying')
+        }, verifyCandidate: candidate =&gt; verifyCommit(project, operationValidation, candidate) })
+      if (!merged) return
+      if (task.mergeResult?.commit !== merged.commit) delete task.mergeResult
+      task.result.merged = merged
+      delete task.operationCheckpoint
+      task.attempt.status = 'completed'
+      task.attempt.finishedAt ??= Date.now()
+      persist('delivered')</code></pre></figure>
+<figure class="source-example"><figcaption id="cap-merge"><code>src/repository.js:345–368</code> 合并候选、远端核对与回读</figcaption><pre tabindex="0" aria-labelledby="cap-merge"><code data-source="src/repository.js:345-368">    if (await ancestor(source, base)) {
+      return merged(saved &amp;&amp; await ancestor(saved.commit, base) ? saved.commit : base)
+    }
+
+    const fastForward = await ancestor(base, source)
+    const commit = fastForward ? source : saved?.base === base ? saved.commit : await createMergeCommit(worktree, signal, base, source)
+    const candidate = { base, source, commit }
+    if (!fastForward &amp;&amp; await git(worktree, signal, 'show', '-s', '--format=%P', commit) !== `${base} ${source}`) {
+      throw new Error('master 合并候选的父提交与任务记录不一致。')
+    }
+    recordCandidate(candidate)
+    if (!fastForward &amp;&amp; !await verifyMergeWorktree(worktree, signal, candidate, verifyCandidate)) return
+    if (!await matchesWorktree({ worktree, commit: source, branch, signal })) throw new Error('合并期间任务提交或工作树已变化。')
+    await checkSource()
+    if (await refs.read(masterRef) !== base) throw new Error('远端 master 在验证期间已变化，请重试。')
+    // 父提交核对保证可快进，精确 lease 阻止读取后发生的竞态。
+    await refs.update(masterRef, base, commit).catch(error =&gt; {
+      signal.throwIfAborted()
+      throw new Error(`更新 ${remote}/master 失败。${error.message}`)
+    })
+    const current = await readMaster()
+    if (!await ancestor(commit, current)) throw new Error('远端 master 更新后未包含本轮交付提交。')
+    await checkSource()
+    return merged(commit)</code></pre></figure>
+</div><div class="code-notes">
+<p><strong><code>task.delivery</code> 是已推送检查点，不是完成状态。</strong> 需求和方案版本一致的重试可以跳过推送。首次推送前，<code>push()</code> 还会核对当前 HEAD、任务分支、审查以及远端旧引用（<code>src/repository.js:247</code>）。</p>
+<p><strong><code>fastForward</code> 决定是否需要验证新候选。</strong> 目标已包含任务提交就直接确认；可快进则复用已验证 SHA；分叉才核对双父提交，在隔离工作树调用 <code>verifyCandidate</code>。候选检查要求人工审批时返回空值，外层 <code>if (!merged) return</code> 让任务停在待审批。</p>
+<p><strong>回读后才写 <code>delivered</code>。</strong> 合并时复查源分支与目标旧值，使用以目标旧 SHA 为预期值的更新；再读远端确认包含本轮提交。异常由外层记录为阻塞（<code>src/workflow.js:861</code>），不是撤销已经成功的任务分支推送。</p>
+</div></div></article>
+<div class="notice"><p><strong>区分规则审查与运行时隔离。</strong> 按 SHA 的人工批准不会自动覆盖新合并候选，也不跳过固定检查或实测；正则审查不是完整的安全扫描。</p></div>
+</section>
+<section class="chapter" id="workflow-examples" aria-labelledby="workflow-examples-title">
+<div class="chapter-head"><h2 id="workflow-examples-title">典型分支</h2><p>用三个例子区分「能继续检查」「能重试合入」和「已经交付」。</p></div>
+<ul class="case-list">
+<li><h3>提交删除了未授权文件</h3><p><a href="#review-diff-code"><code>approvalRequired</code></a> 为真，检查在项目命令前暂停。所有者批准后回 <code>verify_queued</code>；若提交变化，旧 SHA 不再匹配。</p></li>
+<li><h3>操作证据差最后一步</h3><p>验证中断后，从 <a href="#review-evidence-code"><code>completedSteps</code></a> 恢复匹配的通过记录，只补缺的证据。若运行状态已丢失，仍需重建前置状态；提交或计划一变就重新核验证据身份。</p></li>
+<li><h3>任务分支已推送，合入时目标变化</h3><p><a href="#review-push-code"><code>refs.read(masterRef) !== base</code></a> 时合入抛错，任务阻塞。重试读到 <code>task.delivery</code> 时无需重复推送，但仍按最新 <code>master</code> 判断是否需要新候选及复验。</p></li>
+</ul>
+<p class="gate-note"><a href="#sources">返回源码索引</a></p>
+</section>
+</div>
+</div>
+</main>
+<footer class="footer"><div class="wrap"><span>基于源码静态梳理；不是生产运行记录。单文件 HTML，不加载外部资源。</span><a href="#overview-panel">返回架构图</a></div></footer>
+<script>
+(() => {
+  const tablist = document.getElementById('report-tabs');
+  const tabs = [...tablist.querySelectorAll('[role="tab"]')];
+  const panels = tabs.map(tab => document.getElementById(tab.getAttribute('aria-controls')));
+  let selected = -1;
+  panels.forEach((panel, index) => {
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('aria-labelledby', tabs[index].id);
+    panel.tabIndex = 0;
+  });
+
+  function show(index) {
+    if (selected === index) return;
+    selected = index;
+    tabs.forEach((tab, item) => {
+      const active = item === index;
+      tab.setAttribute('aria-selected', String(active));
+      tab.tabIndex = active ? 0 : -1;
+      panels[item].hidden = !active;
+    });
+  }
+
+  function readLocation() {
+    const target = document.getElementById(location.hash.slice(1));
+    const index = panels.indexOf(target?.closest('[data-report-panel]'));
+    show(index < 0 ? 0 : index);
+    if (index >= 0) {
+      if (target === panels[index]) tablist.scrollIntoView({ block: 'start' });
+      else target.scrollIntoView({ block: 'start' });
+    }
+  }
+
+  function select(index) {
+    const hash = tabs[index].hash;
+    if (location.hash !== hash) history.pushState(null, '', hash);
+    show(index);
+  }
+
+  tablist.addEventListener('click', event => {
+    const index = tabs.indexOf(event.target.closest('[role="tab"]'));
+    if (index < 0 || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    select(index);
+  });
+  tablist.addEventListener('keydown', event => {
+    const index = tabs.indexOf(event.target);
+    if (index < 0) return;
+    const next = { ArrowLeft: (index + tabs.length - 1) % tabs.length, ArrowRight: (index + 1) % tabs.length, Home: 0, End: tabs.length - 1, ' ': index }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    select(next);
+    tabs[next].focus();
+  });
+  tablist.hidden = false;
+  readLocation();
+  window.addEventListener('hashchange', readLocation);
+})();
+</script>
+</body>
+</html>

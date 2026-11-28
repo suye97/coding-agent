@@ -87,6 +87,14 @@ function ProcessView({ entries, outputs }: { entries: TaskDetail['timeline']; ou
           <span className="activity-current">{activityState}</span>
           <span className="activity-counts">{activitySummary.total} 项{activityCounts && ` · ${activityCounts}`}</span>
         </div>}
+        {activitySummary.failures.length > 0 && <details className="activity-failures">
+          <summary>查看失败诊断（{activitySummary.failures.length}）</summary>
+          <p>仅显示脱敏后的参数与错误摘要，不显示私有推理或凭据。</p>
+          {activitySummary.failures.map(failure => <section key={failure.id}>
+            <strong>{failure.name ?? activityLabels[failure.kind]}</strong>
+            <pre>{failure.diagnostic || '工具返回失败，但未提供错误正文。'}</pre>
+          </section>)}
+        </details>}
         {output?.truncated && <p className="output-note">仅保留本次调用最近的输出片段。</p>}
         {error && (error.current ? <div className="error-box">{error.message}</div> : <details className="historical-error"><summary>查看历史错误</summary><div className="error-box">{error.message}</div></details>)}
       </div>

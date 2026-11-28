@@ -700,6 +700,23 @@ test('a backend fix uses regression checks rather than forcing a GUI verificatio
   assert.deepEqual(app.pushes, ['abcdef'])
 })
 
+test('fixed-check delivery ignores undeclared development operation evidence', async t => {
+  const app = await fixture(t)
+  app.project.checks = [{ label: '接口回归检查' }]
+  app.runner.design = async () => ({ ...plan, validation: { kind: 'checks', reason: '运行接口回归检查' } })
+  app.runner.develop = async () => ({ status: 'implemented', summary: '接口已修复', observed: '检查通过',
+    operationEvidence: { observed: '检查通过', assertions: [], commit: 'abcdef' } })
+  app.runner.verifyOperation = async () => assert.fail('固定检查方案不应进入操作验证')
+  app.passChecks()
+  app.send('修复缺陷｜订单\n修复批量更新接口丢失参数')
+  await app.work()
+  await app.work()
+  const [delivered] = app.store().inStage('delivered')
+  assert.equal(delivered.error, undefined)
+  assert.equal(delivered.result.operationEvidence, undefined)
+  assert.deepEqual(app.pushes, ['abcdef'])
+})
+
 test('a fix requires an actual baseline reproduction and a post-change observation', async t => {
   const app = await fixture(t)
   app.setOperationReports(scenario => [report({ ...observedReport(scenario), baseline: undefined })])
@@ -854,6 +871,8 @@ test('dispatch exposes bounded model text before the result without changing rev
     recordOutput('正在读取订单模块。')
     recordActivity({ id: 'tool-1', kind: 'read', status: 'running', input: 'private path', output: 'private output' })
     recordActivity({ id: 'tool-1', kind: 'read', status: 'completed' })
+    recordActivity({ id: 'tool-2', kind: 'command', status: 'error', name: 'Bash',
+      diagnostic: '命令：node scripts/verify.js\n错误摘要\nexit code 1', input: 'private input', output: 'private output' })
     const deadline = Date.now() + 2000
     while (!read().value.modelOutputs[task.attempt.id] && Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 25))
@@ -861,9 +880,11 @@ test('dispatch exposes bounded model text before the result without changing rev
     const detail = read().value
     assert.deepEqual(detail.modelOutputs[task.attempt.id], { text: '正在读取订单模块。', truncated: false })
     assert.equal(detail.history.at(-1).attempt.status, 'running')
-    assert.deepEqual(detail.timeline.at(-1).attempt.activities.map(({ id, kind, status }) => ({ id, kind, status })), [
-      { id: 'tool-1', kind: 'read', status: 'completed' },
+    assert.deepEqual(detail.timeline.at(-1).attempt.activities.map(({ id, kind, status, name, diagnostic }) => ({ id, kind, status, name, diagnostic })), [
+      { id: 'tool-1', kind: 'read', status: 'completed', name: undefined, diagnostic: undefined },
+      { id: 'tool-2', kind: 'command', status: 'error', name: 'Bash', diagnostic: '命令：node scripts/verify.js\n错误摘要\nexit code 1' },
     ])
+    assert.equal(JSON.stringify(detail.timeline).includes('private input'), false)
     assert.equal(JSON.stringify(detail.timeline).includes('private path'), false)
     assert.equal(detail.history.at(-1).revision, task.revision)
     assert.equal(app.store().nextNotice(), undefined)
